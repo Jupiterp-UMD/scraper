@@ -1,0 +1,2 @@
+tabulate>=0.8.10
+supabase>=1.0.3
