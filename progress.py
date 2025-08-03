@@ -95,4 +95,4 @@ class CourseScrapingProgress:
             
         # Move to next line after logging ends
         print("\033[2K", end='')
-        print()
+        print("Scraping and parsing all courses complete.")

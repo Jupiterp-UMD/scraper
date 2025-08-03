@@ -89,10 +89,6 @@ def get_courses_for_dept(dept: str, term: str):
         map(lambda x: x.get_text(),
             course_doc.find_all(class_="course-id")))
     course_progress.increment_courses_resolved(len(course_ids))
-    
-    # Get page showing all sections
-    # course_list_str = ','.join(course_ids)
-    # sec_doc = send_request(f"https://app.testudo.umd.edu/soc/{term}/sections?courseIds={course_list_str}")
 
     # Get all course info and return
     course_info_fn_with_docs = partial(course_info, course_doc=course_doc)
@@ -101,8 +97,7 @@ def get_courses_for_dept(dept: str, term: str):
     course_progress.mark_dept_complete(dept)
     return result
 
-def scrape_schedule(term: str, dept: str, course: str):
-    # TODO: support only querying a single course
+def scrape_courses(term: str, dept: str):
     depts = [dept] if dept else get_depts()
     course_progress.total_depts = len(depts)
     get_courses_for_dept_with_term = partial(get_courses_for_dept, term=term)

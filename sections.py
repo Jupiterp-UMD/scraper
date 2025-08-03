@@ -1,0 +1,84 @@
+from bs4 import BeautifulSoup
+import requests
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+
+# Attempts to send the request a total of 3 times by default.
+# Testudo can be flaky sometimes.
+def send_request(uri: str, attempts_remaining=2) -> BeautifulSoup:
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+
+    response = requests.post(uri, headers=headers)
+    if response.status_code != 200:
+        if attempts_remaining > 0:
+            return send_request(uri, attempts_remaining - 1)
+        else:
+            raise Exception(f"Failed to fetch data: {response.status_code}")
+    
+    return BeautifulSoup(response.text, features='html.parser')
+
+def split_into_chunks(items, num_chunks):
+    k, m = divmod(len(items), num_chunks)
+    return [items[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(num_chunks)]
+
+def parse_meeting(div):
+    days = div.find('span', class_='section-days').get_text()
+    start = div.find('span', class_='class-start-time').get_text()
+    end = div.find('span', class_='class-end-time').get_text()
+    return f'{days}-{start}-{end}'
+
+def parse_section(div, course: str):
+    sec_code = div.find('input', {'name': 'sectionId'})['value']
+    instructors = list(
+        map(lambda x: x.get_text(),
+            div.find_all('span', class_='section-instructor')))
+    meetings_divs = div.select('.class-days-container .row')
+    meetings = list(map(parse_meeting, meetings_divs))
+    open_seats = int(div.find('span', class_='open-seats-count').get_text())
+    total_seats = int(div.find('span', class_='total-seats-count').get_text())
+    waitlist = int(div.find('span', class_='waitlist-count').get_text())
+    
+    return {
+        "course_code": course,
+        "sec_code": sec_code,
+        "instructors": instructors,
+        "meetings": meetings,
+        "open_seats": open_seats,
+        "total_seats": total_seats,
+        "waitlist": waitlist,
+    }
+
+def sections_for_course(course: str, page: BeautifulSoup):
+    course_div = page.find('div', id=course)
+    
+    # some courses have no sections
+    if course_div == None:
+        return []
+
+    sections = course_div.find_all('div', class_='section')
+    section_with_sections_div = partial(parse_section, course=course)
+    result = list(
+        map(section_with_sections_div, filter(lambda x: x != None, sections))
+    )
+    return result
+
+def get_sections_for_chunk(chunk: list[str], term: str):
+    url = f'https://app.testudo.umd.edu/soc/{term}/sections?courseIds=' + ','.join(chunk)
+    chunk_page = send_request(url)
+
+    sections_for_course_with_page = partial(sections_for_course, page = chunk_page)
+    sections = list(map(sections_for_course_with_page, chunk))
+    return [section for sublist in sections for section in sublist]
+
+def scrape_sections(term: str, courses):
+    course_codes = list(map(lambda x: x["code"], courses))
+    chunks = split_into_chunks(items=course_codes, num_chunks=50)
+    get_sections_for_chunk_with_term = partial(get_sections_for_chunk, term=term)
+    workers = 4
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        sections_lists = list(executor.map(get_sections_for_chunk_with_term, chunks))
+    sections = [section for sublist in sections_lists for section in sublist]
+    return sections

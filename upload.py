@@ -14,7 +14,7 @@ def get_supabase_client() -> Client:
 def print_as_json(data):
     print(json.dumps(data, indent=2))
 
-def print_as_table(data, wrap_width=38):
+def print_as_table(data, wrap_width=36):
     if not data:
         print("No data found.")
         return
@@ -40,10 +40,11 @@ def upload_to_supabase(data):
         if response.get("status_code") != 201:
             print(f"Failed to insert: {entry}", file=sys.stderr)
 
-def output_results(data, test_json, test_table):
-    if test_json:
-        print_as_json(data)
-    elif test_table:
+def upload_courses(data, print_output):
+    '''
+    Doesn't upload if `print_output` is enabled.
+    '''
+    if print_output:
         print_as_table(data)
     else:
         upload_to_supabase(data)
