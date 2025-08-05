@@ -88,7 +88,7 @@ def scrape_sections(term: str, courses):
     course_codes = list(map(lambda x: x["code"], courses))
     chunks = split_into_chunks(items=course_codes, num_chunks=50)
     get_sections_for_chunk_with_term = partial(get_sections_for_chunk, term=term)
-    workers = 2
+    workers = 5
     sections_progress.courses_sections_to_parse = len(courses)
     sections_progress.start_logging(num_workers=workers)
     with ThreadPoolExecutor(max_workers=workers) as executor:
