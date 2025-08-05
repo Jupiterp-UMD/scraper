@@ -1,7 +1,11 @@
 from bs4 import BeautifulSoup
-import requests
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from progress import SectionScrapingProgress
+import requests
+
+# Logging progress
+sections_progress = SectionScrapingProgress()
 
 # Attempts to send the request a total of 3 times by default.
 # Testudo can be flaky sometimes.
@@ -51,7 +55,7 @@ def parse_section(div, course: str):
         "waitlist": waitlist,
     }
 
-def sections_for_course(course: str, page: BeautifulSoup):
+def sections_for_course(course: str, page: BeautifulSoup, chunk_start: str, chunk_end: str):
     course_div = page.find('div', id=course)
     
     # some courses have no sections
@@ -63,22 +67,32 @@ def sections_for_course(course: str, page: BeautifulSoup):
     result = list(
         map(section_with_sections_div, filter(lambda x: x != None, sections))
     )
+    sections_progress.increment_chunk_courses_parsed(chunk_start, chunk_end)
     return result
 
 def get_sections_for_chunk(chunk: list[str], term: str):
+    if len(chunk) == 0:
+        return []
+
+    sections_progress.mark_chunk_sending_req(chunk[0], chunk[-1])
     url = f'https://app.testudo.umd.edu/soc/{term}/sections?courseIds=' + ','.join(chunk)
     chunk_page = send_request(url)
+    sections_progress.mark_chunk_parsing(chunk[0], chunk[-1], len(chunk))
 
-    sections_for_course_with_page = partial(sections_for_course, page = chunk_page)
+    sections_for_course_with_page = partial(sections_for_course, page=chunk_page, chunk_start=chunk[0], chunk_end=chunk[-1])
     sections = list(map(sections_for_course_with_page, chunk))
+    sections_progress.mark_chunk_complete(chunk[0], chunk[-1])
     return [section for sublist in sections for section in sublist]
 
 def scrape_sections(term: str, courses):
     course_codes = list(map(lambda x: x["code"], courses))
     chunks = split_into_chunks(items=course_codes, num_chunks=50)
     get_sections_for_chunk_with_term = partial(get_sections_for_chunk, term=term)
-    workers = 4
+    workers = 2
+    sections_progress.courses_sections_to_parse = len(courses)
+    sections_progress.start_logging(num_workers=workers)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         sections_lists = list(executor.map(get_sections_for_chunk_with_term, chunks))
+    sections_progress.stop_logging()
     sections = [section for sublist in sections_lists for section in sublist]
     return sections
