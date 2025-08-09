@@ -28,13 +28,42 @@ def split_into_chunks(items, num_chunks):
     k, m = divmod(len(items), num_chunks)
     return [items[i*k + min(i, m):(i+1)*k + min(i+1, m)] for i in range(num_chunks)]
 
-def parse_meeting(div):
-    days = div.find('span', class_='section-days').get_text()
+def parse_async_class(div: BeautifulSoup):
+    online_classroom = div.find('span', class_='class-room')
+    if online_classroom != None:
+        return 'OnlineAsync'
+    return 'Unspecified'
+
+def get_location(div: BeautifulSoup):
+    location = div.find('span', class_='class-building')
+    try_building = location.find('span', class_='building-code')
+    try_classroom = location.find('span', class_='class-room')
+
+    if try_building == None:
+        return 'OnlineSync'
+    
+    building = try_building.get_text()
+    classroom = try_classroom.get_text() if try_classroom != None else '????'
+
+    return f'{building}-{classroom}'
+
+def parse_meeting(div: BeautifulSoup):
+    try_days = div.find('span', class_='section-days')
+    if try_days == None:
+        return parse_async_class(div)
+    
+    days = try_days.get_text()
+    if days == 'TBA':
+        return 'TBA'
+
     start = div.find('span', class_='class-start-time').get_text()
     end = div.find('span', class_='class-end-time').get_text()
-    return f'{days}-{start}-{end}'
 
-def parse_section(div, course: str):
+    location = get_location(div)
+
+    return f'{days}-{start}-{end}-{location}'
+
+def parse_section(div: BeautifulSoup, course: str):
     sec_code = div.find('input', {'name': 'sectionId'})['value']
     instructors = list(
         map(lambda x: x.get_text(),
@@ -43,7 +72,9 @@ def parse_section(div, course: str):
     meetings = list(map(parse_meeting, meetings_divs))
     open_seats = int(div.find('span', class_='open-seats-count').get_text())
     total_seats = int(div.find('span', class_='total-seats-count').get_text())
-    waitlist = int(div.find('span', class_='waitlist-count').get_text())
+    try_waitlist_holdfile = div.find_all('span', class_='waitlist-count')
+    waitlist = int(try_waitlist_holdfile[0].get_text())
+    holdfile = None if len(try_waitlist_holdfile) == 1 else try_waitlist_holdfile[1].get_text()
     
     return {
         "course_code": course,
@@ -53,6 +84,7 @@ def parse_section(div, course: str):
         "open_seats": open_seats,
         "total_seats": total_seats,
         "waitlist": waitlist,
+        "holdfile": holdfile
     }
 
 def sections_for_course(course: str, page: BeautifulSoup, chunk_start: str, chunk_end: str):
