@@ -1,8 +1,7 @@
 import argparse
-import sys
 from courses import scrape_courses
 from sections import scrape_sections
-from upload import upload_courses
+from upload import upload_data
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Scrape Testudo Schedule of Classes")
@@ -17,8 +16,8 @@ def main():
     course_data = scrape_courses(args.term, args.department)
     sections_data = scrape_sections(args.term, course_data)
 
-    upload_courses(course_data, args.print_output)
-    upload_courses(sections_data, args.print_output)
+    upload_data(course_data, args.print_output, table='Courses')
+    upload_data(sections_data, args.print_output, table='Sections')
 
 if __name__ == "__main__":
     main()

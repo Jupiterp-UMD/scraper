@@ -70,7 +70,7 @@ def course_info(course: str, course_doc: BeautifulSoup):
     course_progress.increment_courses_parsed()
 
     return {
-        "code": course,
+        "course_code": course,
         "name": title,
         "min_credits": min_credits,
         "max_credits": max_credits,

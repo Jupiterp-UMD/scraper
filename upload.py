@@ -1,4 +1,3 @@
-import json
 from tabulate import tabulate
 import os
 from supabase import create_client, Client
@@ -10,9 +9,6 @@ def get_supabase_client() -> Client:
     if not url or not key:
         raise EnvironmentError("DATABASE_URL or DATABASE_KEY not set in environment")
     return create_client(url, key)
-
-def print_as_json(data):
-    print(json.dumps(data, indent=2))
 
 def print_as_table(data, wrap_width=36):
     if not data:
@@ -32,19 +28,17 @@ def print_as_table(data, wrap_width=36):
     rows = [item.values() for item in wrapped_data]
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
-def upload_to_supabase(data):
-    client = get_supabase_client()
-    table = client.table("courses")
-    for entry in data:
-        response = table.upsert(entry).execute()
-        if response.get("status_code") != 201:
-            print(f"Failed to insert: {entry}", file=sys.stderr)
-
-def upload_courses(data, print_output):
+def upload_data(data, print_output, table):
     '''
-    Doesn't upload if `print_output` is enabled.
+    Doesn't upload if `print_output` is enabled
     '''
     if print_output:
         print_as_table(data)
     else:
-        upload_to_supabase(data)
+        client = get_supabase_client()
+
+        # Delete all current data to avoid having stale data
+        client.table(table).delete().neq('course_code', 0).execute()
+
+        # Upload data
+        client.table(table).insert(data).execute()

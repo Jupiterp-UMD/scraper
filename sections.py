@@ -117,7 +117,7 @@ def get_sections_for_chunk(chunk: list[str], term: str):
     return [section for sublist in sections for section in sublist]
 
 def scrape_sections(term: str, courses):
-    course_codes = list(map(lambda x: x["code"], courses))
+    course_codes = list(map(lambda x: x["course_code"], courses))
     chunks = split_into_chunks(items=course_codes, num_chunks=50)
     get_sections_for_chunk_with_term = partial(get_sections_for_chunk, term=term)
     workers = 5
