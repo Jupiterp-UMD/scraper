@@ -42,3 +42,9 @@ def upload_data(data, print_output, table):
 
         # Upload data
         client.table(table).insert(data).execute()
+
+def download_course_codes(dept_opt: str | None):
+    dept = dept_opt if dept_opt else ""
+    client = get_supabase_client()
+    courses = client.table("Courses").select("course_code").ilike("course_code", f"{dept}*").execute().data
+    return courses

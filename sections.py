@@ -116,12 +116,11 @@ def get_sections_for_chunk(chunk: list[str], term: str):
     sections_progress.mark_chunk_complete(chunk[0], chunk[-1])
     return [section for sublist in sections for section in sublist]
 
-def scrape_sections(term: str, courses):
-    course_codes = list(map(lambda x: x["course_code"], courses))
-    chunks = split_into_chunks(items=course_codes, num_chunks=50)
+def scrape_sections(term: str, course_codes):
+    chunks = split_into_chunks(items=course_codes, num_chunks=40)
     get_sections_for_chunk_with_term = partial(get_sections_for_chunk, term=term)
     workers = 5
-    sections_progress.courses_sections_to_parse = len(courses)
+    sections_progress.courses_sections_to_parse = len(course_codes)
     sections_progress.start_logging(num_workers=workers)
     with ThreadPoolExecutor(max_workers=workers) as executor:
         sections_lists = list(executor.map(get_sections_for_chunk_with_term, chunks))
