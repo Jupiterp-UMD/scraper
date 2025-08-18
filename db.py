@@ -38,7 +38,8 @@ def upload_data(data, print_output, table):
         client = get_supabase_client()
 
         # Delete all current data to avoid having stale data
-        client.table(table).delete().neq('course_code', 0).execute()
+        comparison_col = 'course_code' if table != 'Instructors' else 'slug'
+        client.table(table).delete().neq(comparison_col, 0).execute()
 
         # Upload data
         client.table(table).insert(data).execute()

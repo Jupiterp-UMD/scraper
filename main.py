@@ -1,6 +1,7 @@
 import argparse
 from courses import scrape_courses
 from sections import scrape_sections
+from instructors import get_instructors
 from db import upload_data, download_course_codes
 
 def parse_args():
@@ -8,22 +9,38 @@ def parse_args():
     parser.add_argument("--term", help="Term to scrape (e.g., '202508' for Fall 2025)")
     parser.add_argument("--print-output", action="store_true", help="Output results to stdout instead of uploading to DB")
     parser.add_argument("--department", help="Specific department (e.g., CMSC)")
-    parser.add_argument("--only-sections", action="store_true", help="Only scrapes and uploads section data, instead of courses. Uses the list of courses already present in the courses database table.")
+    parser.add_argument("--courses", action="store_true", help="Scrape, parse, and upload all courses")
+    parser.add_argument("--sections", action="store_true", help="Scrape, parse, and upload all sections; if `--courses` is not enabled, uses list of courses already present in courses database")
+    parser.add_argument("--instructors", action="store_true", help="Scrape, parse, and upload all instructors from PlanetTerp")
     return parser.parse_args()
 
 def main():
     args = parse_args()
 
-    if not args.only_sections:
+    # Get courses; if section scraping is enabled but courses isn't, get
+    # list of courses from DB.
+    if args.courses:
         course_data = scrape_courses(args.term, args.department)
-    else:
+    elif args.sections:
         course_data = download_course_codes(args.department)
+    else:
+        course_data = []
     course_codes = [course["course_code"] for course in course_data]
-    sections_data = scrape_sections(args.term, course_codes)
+    
+    # Scrape sections from Testudo
+    if args.sections:
+        sections_data = scrape_sections(args.term, course_codes)
 
-    if not args.only_sections:
+    # Upload courses and sections to DB
+    if args.courses:
         upload_data(course_data, args.print_output, table='Courses')
-    upload_data(sections_data, args.print_output, table='Sections')
+    if args.sections:
+        upload_data(sections_data, args.print_output, table='Sections')
+
+    # Get instructors from PlanetTerp API and upload to DB
+    if args.instructors:
+        instructors_data = get_instructors(args.term)
+        upload_data(instructors_data, args.print_output, table='Instructors')
 
 if __name__ == "__main__":
     main()
