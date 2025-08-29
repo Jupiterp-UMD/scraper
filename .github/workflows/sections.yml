@@ -1,0 +1,33 @@
+# Get all data from PlanetTerp and upload to Jupiterp DB
+name: Sections Data Collection
+
+on:
+    workflow_dispatch:
+    schedule:
+        - cron: '5,35 * * * *' # Runs every 30 minutes
+
+jobs:
+    run-scraper:
+        runs-on: ubuntu-latest
+
+        steps:
+            -   name: Checkout code
+                uses: actions/checkout@v4
+                with:
+                    ref: main
+        
+            -   name: Setup Python
+                uses: actions/setup-python@v5
+                with:
+                    python-version: '3.11'
+            
+            -   name: Setup Python dependencies
+                run: |
+                    python3 -m pip install -r requirements.txt
+
+            -   name: Get sections data and upload
+                env:
+                    DATABASE_URL: ${{ secrets.DATABASE_URL }}
+                    DATABASE_KEY: ${{ secrets.DATABASE_KEY }}
+                run: |
+                    python3 main.py --term 202508 --sections
