@@ -1,3 +1,4 @@
 tabulate>=0.8.10
 supabase>=2.18.0
 websockets==14.2
+beautifulsoup4==4.12.3
