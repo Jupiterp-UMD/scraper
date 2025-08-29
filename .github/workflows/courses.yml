@@ -1,0 +1,33 @@
+# Get course data from Testudo and upload to DB
+name: Sections Data Collection
+
+on:
+    workflow_dispatch:
+    schedule:
+        - cron: '0 0,12 * * *' # Runs every 12 hours
+
+jobs:
+    run-scraper:
+        runs-on: ubuntu-latest
+
+        steps:
+            -   name: Checkout code
+                uses: actions/checkout@v4
+                with:
+                    ref: main
+        
+            -   name: Setup Python
+                uses: actions/setup-python@v5
+                with:
+                    python-version: '3.11'
+            
+            -   name: Setup Python dependencies
+                run: |
+                    python3 -m pip install -r requirements.txt
+
+            -   name: Get course data and upload
+                env:
+                    DATABASE_URL: ${{ secrets.DATABASE_URL }}
+                    DATABASE_KEY: ${{ secrets.DATABASE_KEY }}
+                run: |
+                    python3 main.py --term 202508 --courses
