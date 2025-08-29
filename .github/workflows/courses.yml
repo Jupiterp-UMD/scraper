@@ -1,5 +1,5 @@
 # Get course data from Testudo and upload to DB
-name: Sections Data Collection
+name: Courses Data Collection
 
 on:
     workflow_dispatch:
