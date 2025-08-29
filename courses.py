@@ -5,7 +5,7 @@ from progress import CourseScrapingProgress
 import requests
 
 # Logging progress
-course_progress = CourseScrapingProgress()
+course_progress = CourseScrapingProgress(interval=5)
 
 # Attempts to send the request a total of 3 times by default.
 # Testudo can be flaky sometimes.
