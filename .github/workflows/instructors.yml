@@ -30,4 +30,4 @@ jobs:
                     DATABASE_URL: ${{ secrets.SUPABASE_URL }}
                     DATABASE_KEY: ${{ secrets.SUPABASE_KEY }}
                 run: |
-                    python3 scraper.py --term 202508 --instructors
+                    python3 main.py --term 202508 --instructors
