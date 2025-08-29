@@ -1,0 +1,33 @@
+# Get all data from PlanetTerp and upload to Jupiterp DB
+name: Instructors Data Collection
+
+on:
+    workflow_dispatch:
+    schedule:
+        - cron: '0 0 * * *' # Runs daily at midnight
+
+jobs:
+    run-scraper:
+        runs-on: ubuntu-latest
+
+        steps:
+            -   name: Checkout code
+                uses: actions/checkout@v4
+                with:
+                    ref: main
+        
+            -   name: Setup Python
+                uses: actions/setup-python@v5
+                with:
+                    python-version: '3.11'
+            
+            -   name: Setup Python dependencies
+                run: |
+                    python3 -m pip install -r requirements.txt
+
+            -   name: Get instructions data and upload
+                env:
+                    DATABASE_URL: ${{ secrets.SUPABASE_URL }}
+                    DATABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+                run: |
+                    python3 scraper.py --term 202508 --instructors
