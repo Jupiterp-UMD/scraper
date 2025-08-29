@@ -117,7 +117,7 @@ def get_sections_for_chunk(chunk: list[str], term: str):
     return [section for sublist in sections for section in sublist]
 
 def scrape_sections(term: str, course_codes):
-    chunks = split_into_chunks(items=course_codes, num_chunks=40)
+    chunks = split_into_chunks(items=course_codes, num_chunks=20)
     get_sections_for_chunk_with_term = partial(get_sections_for_chunk, term=term)
     workers = 5
     sections_progress.courses_sections_to_parse = len(course_codes)
