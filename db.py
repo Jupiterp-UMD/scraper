@@ -45,7 +45,17 @@ def upload_data(data, print_output, table):
         client.table(table).insert(data).execute()
 
 def download_course_codes(dept_opt: str | None):
+    # Continues to send requests until the API returns less than 500.
+    full_courses = []
+    offset = 0
+    response_full = True
     dept = dept_opt if dept_opt else ""
     client = get_supabase_client()
-    courses = client.table("courses").select("course_code").ilike("course_code", f"{dept}*").execute().data
-    return courses
+    while response_full:
+        print(f"Getting courses from DB with offset: {offset}")
+        courses = client.table("courses").select("course_code").ilike("course_code", f"{dept}*").range(offset, offset + 499).execute().data
+        full_courses += courses
+        offset += len(courses)
+        if len(courses) < 500:
+            response_full = False
+    return full_courses

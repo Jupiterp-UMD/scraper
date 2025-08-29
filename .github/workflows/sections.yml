@@ -1,4 +1,4 @@
-# Get all data from PlanetTerp and upload to Jupiterp DB
+# Get sections data from Testudo and upload to DB
 name: Sections Data Collection
 
 on:
