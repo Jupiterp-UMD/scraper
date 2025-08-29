@@ -33,14 +33,14 @@ def main():
 
     # Upload courses and sections to DB
     if args.courses:
-        upload_data(course_data, args.print_output, table='Courses')
+        upload_data(course_data, args.print_output, table='courses')
     if args.sections:
-        upload_data(sections_data, args.print_output, table='Sections')
+        upload_data(sections_data, args.print_output, table='sections')
 
     # Get instructors from PlanetTerp API and upload to DB
     if args.instructors:
         instructors_data = get_instructors(args.term)
-        upload_data(instructors_data, args.print_output, table='Instructors')
+        upload_data(instructors_data, args.print_output, table='instructors')
 
 if __name__ == "__main__":
     main()

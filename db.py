@@ -38,7 +38,7 @@ def upload_data(data, print_output, table):
         client = get_supabase_client()
 
         # Delete all current data to avoid having stale data
-        comparison_col = 'course_code' if table != 'Instructors' else 'slug'
+        comparison_col = 'course_code' if table != 'instructors' else 'slug'
         client.table(table).delete().neq(comparison_col, 0).execute()
 
         # Upload data
@@ -47,5 +47,5 @@ def upload_data(data, print_output, table):
 def download_course_codes(dept_opt: str | None):
     dept = dept_opt if dept_opt else ""
     client = get_supabase_client()
-    courses = client.table("Courses").select("course_code").ilike("course_code", f"{dept}*").execute().data
+    courses = client.table("courses").select("course_code").ilike("course_code", f"{dept}*").execute().data
     return courses
