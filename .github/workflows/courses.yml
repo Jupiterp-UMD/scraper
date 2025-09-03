@@ -31,3 +31,11 @@ jobs:
                     DATABASE_KEY: ${{ secrets.DATABASE_KEY }}
                 run: |
                     python3 main.py --term 202508 --courses
+            
+            -   name: Verify database population
+                env:
+                    DATABASE_URL: ${{ secrets.DATABASE_URL }}
+                    DATABASE_KEY: ${{ secrets.DATABASE_KEY }}
+                    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                run: |
+                    python3 ci.py
