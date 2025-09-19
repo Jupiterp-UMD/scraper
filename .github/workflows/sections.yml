@@ -30,4 +30,4 @@ jobs:
                     DATABASE_URL: ${{ secrets.DATABASE_URL }}
                     DATABASE_KEY: ${{ secrets.DATABASE_KEY }}
                 run: |
-                    python3 main.py --term 202508 --sections
+                    python3 main.py --term 202601 --sections
