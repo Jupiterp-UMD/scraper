@@ -53,7 +53,7 @@ def verify_supabase_populated():
     rows = client.table("sections").select("course_code, sec_code", count="exact").execute()
     length = rows.count
     print(f"Found {length} rows in sections table.")
-    if not rows or rows.count < 8000:
+    if not rows or rows.count < 7000:
         print(f"Table sections is not populated with enough data ({length} < 7000). Something must be wrong.")
         send_alert("sections")
         exit(1)
