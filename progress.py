@@ -175,7 +175,7 @@ class SectionScrapingProgress:
                     print("\033[2K", end='')
                     print(f"\t\t{Fore.YELLOW}{Style.DIM}1 worker idle{Style.RESET_ALL}")
                 
-                num_lines = 4 + self.num_workers
+                num_lines = 5 + self.num_workers
                 sys.stdout.write(f"\033[{num_lines}A")
                 sys.stdout.flush()
             time.sleep(self.interval)

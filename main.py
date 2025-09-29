@@ -29,7 +29,7 @@ def main():
     if args.courses:
         course_data = scrape_courses(args.term, deptCodes)
     elif args.sections:
-        course_data = download_course_codes(deptCodes)
+        course_data = download_course_codes(args.department)
     else:
         course_data = []
     course_codes = [course["course_code"] for course in course_data]
@@ -39,9 +39,9 @@ def main():
         sections_data = scrape_sections(args.term, course_codes)
 
     # Upload courses and sections to DB
-    if not args.department:
-        upload_depts(depts, args.print_output)
     if args.courses:
+        if not args.department:
+            upload_depts(depts, args.print_output)
         upload_data(course_data, args.print_output, table='courses')
     if args.sections:
         upload_data(sections_data, args.print_output, table='sections')

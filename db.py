@@ -5,9 +5,11 @@ import textwrap
 
 def get_supabase_client() -> Client:
     url = os.getenv("DATABASE_URL")
+    if not url:
+        raise EnvironmentError("DATABASE_URL not set in environment")
     key = os.getenv("DATABASE_KEY")
-    if not url or not key:
-        raise EnvironmentError("DATABASE_URL or DATABASE_KEY not set in environment")
+    if not key:
+        raise EnvironmentError("DATABASE_KEY not set in environment")
     return create_client(url, key)
 
 def print_as_table(data, wrap_width=36):
