@@ -45,7 +45,10 @@ def get_location(div: BeautifulSoup):
     building = try_building.get_text()
     classroom = try_classroom.get_text() if try_classroom != None else '????'
 
-    return f'{building}-{classroom}'
+    if try_classroom != None:
+        return f'{building}-{classroom}'
+    else:
+        return f'{building}'
 
 def parse_meeting(div: BeautifulSoup):
     try_days = div.find('span', class_='section-days')
