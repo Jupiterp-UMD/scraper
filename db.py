@@ -28,6 +28,22 @@ def print_as_table(data, wrap_width=36):
     rows = [item.values() for item in wrapped_data]
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
+def upload_depts(depts, print_output):
+    '''
+    Doesn't upload if `print_output` is enabled
+    '''
+    if print_output:
+        print_as_table([{"dept_code": d[0], "dept_name": d[1]} for d in depts])
+    else:
+        client = get_supabase_client()
+
+        # Delete all current data to avoid having stale data
+        client.table("departments").delete().neq("dept_code", "").execute()
+
+        # Upload data
+        dept_data = [{"dept_code": d[0], "name": d[1]} for d in depts]
+        client.table("departments").insert(dept_data).execute()
+
 def upload_data(data, print_output, table):
     '''
     Doesn't upload if `print_output` is enabled

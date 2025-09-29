@@ -26,9 +26,14 @@ def send_request(uri: str, attempts_remaining=2) -> BeautifulSoup:
 
 def get_depts():
     soup = send_request("https://app.testudo.umd.edu/soc")
-    depts = list(
-        map(lambda x: x.get_text(), 
-            soup.select("#course-prefixes-page .two")))
+    dept_containers = soup.select("a.clearfix")
+    depts = []
+    for container in dept_containers:
+        abbrev = container.select_one(".prefix-abbrev")
+        name = container.select_one(".prefix-name")
+        if not abbrev or not name:
+            continue
+        depts.append((abbrev.get_text(strip=True), name.get_text(strip=True)))
     return depts
 
 def course_info(course: str, course_doc: BeautifulSoup):
@@ -97,8 +102,7 @@ def get_courses_for_dept(dept: str, term: str):
     course_progress.mark_dept_complete(dept)
     return result
 
-def scrape_courses(term: str, dept: str):
-    depts = [dept] if dept else get_depts()
+def scrape_courses(term: str, depts: list[str]):
     course_progress.total_depts = len(depts)
     get_courses_for_dept_with_term = partial(get_courses_for_dept, term=term)
     workers = 4
