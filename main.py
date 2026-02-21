@@ -3,6 +3,8 @@ from courses import scrape_courses, get_depts
 from sections import scrape_sections
 from instructors import get_instructors
 from db import upload_data, download_course_codes, upload_depts
+from dotenv import load_dotenv
+import os
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Scrape Testudo Schedule of Classes")
@@ -15,6 +17,8 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    load_dotenv()
+
     args = parse_args()
 
     # Get depts, unless department is specified.
