@@ -24,8 +24,8 @@ def send_request(uri: str, attempts_remaining=2) -> BeautifulSoup:
     
     return BeautifulSoup(response.text, features='html.parser')
 
-def get_depts():
-    soup = send_request("https://app.testudo.umd.edu/soc")
+def get_depts(term: str):
+    soup = send_request(f"https://app.testudo.umd.edu/soc/{term}")
     dept_containers = soup.select("a.clearfix")
     depts = []
     for container in dept_containers:

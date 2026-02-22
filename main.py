@@ -4,7 +4,6 @@ from sections import scrape_sections
 from instructors import get_instructors
 from db import upload_data, download_course_codes, upload_depts
 from dotenv import load_dotenv
-import os
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Scrape Testudo Schedule of Classes")
@@ -25,7 +24,7 @@ def main():
     if args.department:
         depts = ([args.department], "")
     else:
-        depts = get_depts()
+        depts = get_depts(args.term)
     deptCodes = [d[0] for d in depts]
 
     # Get courses; if section scraping is enabled but courses isn't, get
