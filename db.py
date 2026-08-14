@@ -46,18 +46,51 @@ def upload_depts(depts, print_output):
         dept_data = [{"dept_code": d[0], "name": d[1]} for d in depts]
         client.table("departments").insert(dept_data).execute()
 
+# Tables that must never be cleared and reloaded.
+#
+# `upload_data` exists because Testudo data is a snapshot: courses and sections
+# go stale, so each run replaces them wholesale. Instructor identity is the
+# opposite. `instructor_aliases` rows are append-only and deleting one orphans
+# every grade row matched through it, and `reviews` will hold user-submitted
+# content with `on delete cascade` back to `instructors` - so a nightly
+# delete-all here would silently destroy every review in the database.
+#
+# This is a guard rather than a comment because the `instructors` branch of
+# this function was removed rather than never existing, and the obvious way to
+# add a new table to the nightly scrape is to copy the line above.
+NEVER_TRUNCATE = frozenset({
+    'instructors',
+    'instructor_aliases',
+    'instructor_match_queue',
+    'section_instructors',
+    'grades',
+    'grade_ingests',
+    'reviews',
+})
+
 def upload_data(data, print_output, table):
     '''
-    Doesn't upload if `print_output` is enabled
+    Replace the contents of a snapshot table.
+
+    Doesn't upload if `print_output` is enabled.
     '''
+    if table in NEVER_TRUNCATE:
+        raise ValueError(
+            f"'{table}' is append/upsert-only and must not be truncated; "
+            f"use the dedicated writer for it (see instructor_registry.py "
+            f"for instructors, grades/db.py for grades)"
+        )
+
     if print_output:
         print_as_table(data)
     else:
         client = get_supabase_client()
 
-        # Delete all current data to avoid having stale data
-        comparison_col = 'course_code' if table != 'instructors' else 'slug'
-        client.table(table).delete().neq(comparison_col, 0).execute()
+        # Delete all current data to avoid having stale data. `gte('', '')` is
+        # true for every non-null text value, which is the PostgREST way of
+        # saying "all rows"; the previous `neq(col, 0)` compared a text column
+        # to an integer and worked only by accident of coercion.
+        client.table(table).delete().gte('course_code', '').execute()
 
         # Upload data
         client.table(table).insert(data).execute()
