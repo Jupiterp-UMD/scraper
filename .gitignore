@@ -4,3 +4,4 @@ __pycache__
 .ci-counts.json
 archive/
 .venv/
+.dumps/

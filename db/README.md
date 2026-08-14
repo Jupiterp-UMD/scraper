@@ -63,6 +63,35 @@ replaced.
 psql "$DATABASE_DIRECT_URL" -Atf db/baseline/capture.sql > db/baseline/current_schema.sql
 ```
 
+## Rehearsing against a test project
+
+`clone_project.sh` copies the `public` schema and its data from one Supabase
+project into another, so the whole migration can be run somewhere a mistake
+costs nothing.
+
+```sh
+brew install libpq
+export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
+
+export SOURCE_DB_URL='postgresql://postgres:...@db.<prod>.supabase.co:5432/postgres'
+export TARGET_DB_URL='postgresql://postgres:...@db.<test>.supabase.co:5432/postgres'
+
+./db/clone_project.sh --dry-run              # inspect both, write nothing
+./db/clone_project.sh --confirm <test-ref>   # the only form that writes
+```
+
+The target's `public` schema is dropped and recreated, so the confirmation
+argument has to be typed by hand: a copy-pasted connection string pointing at
+the wrong project is the one mistake here that cannot be undone.
+
+Worth doing before touching production, because it answers the question nobody
+can estimate in advance. Clone, apply the migrations, then run
+`scripts/backfill_instructor_ids.py --dry-run` against the copy: the match rate
+it prints is what decides how much manual triage the real migration costs.
+
+The clone also captures `active_instructors`, whose definition currently exists
+only inside the production database.
+
 ## Order of operations for the PlanetTerp migration
 
 The migrations here are only half of each phase; the scripts that fill the new
