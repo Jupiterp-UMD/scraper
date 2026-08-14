@@ -78,6 +78,43 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    ingest_term = subparsers.add_parser(
+        "ingest-term",
+        help=(
+            "Ingest one recent term, using Testudo to attribute sections the "
+            "registrar left blank and resolving every name to an instructor id"
+        ),
+    )
+    ingest_term.add_argument("file", help="The .csv/.xlsx file for one term")
+    ingest_term.add_argument(
+        "--term",
+        type=int,
+        help="Override term detection (ex. 202601)",
+    )
+    ingest_term.add_argument(
+        "--print-output",
+        action="store_true",
+        help="Parse, attribute, and summarize without uploading",
+    )
+    ingest_term.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-upload even if this file's hash is already logged for that term",
+    )
+    ingest_term.add_argument(
+        "--skip-testudo",
+        action="store_true",
+        help=(
+            "Do not scrape Testudo. Use for a term too old to still be listed, "
+            "where the scrape would return nothing and take a long time doing it"
+        ),
+    )
+    ingest_term.add_argument(
+        "--skip-refresh",
+        action="store_true",
+        help="Do not refresh the materialized views afterwards (leaves them STALE)",
+    )
+
     verify = subparsers.add_parser(
         "verify", help="Parse files and report on them; never touches the database"
     )
@@ -180,6 +217,103 @@ def run_ingest(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def run_ingest_term(args: argparse.Namespace) -> int:
+    """
+    Ingest a single recent term with Testudo-assisted attribution.
+
+    Ordering matters and is not obvious: Testudo attribution has to happen
+    before instructor resolution, because it changes which names there are to
+    resolve; resolution has to happen before the upsert, because
+    `instructor_id` is written with the row; and the matview refresh has to
+    happen last, because it reads what the upsert wrote.
+    """
+    from ingest_term import (
+        apply_testudo_attribution,
+        refresh_matviews,
+        resolve_instructor_ids,
+        testudo_instructor_map,
+    )
+
+    path = Path(args.file)
+    if not path.is_file():
+        raise SystemExit(f"no such file: {path}")
+
+    digest = file_digest(path)
+    try:
+        records, report = parse_file(path, term=args.term)
+    except (ParseError, TermError) as err:
+        raise SystemExit(f"{path.name}: {err}")
+
+    print(report_line(report))
+    for warning in report.warnings:
+        print(f"      note: {warning}")
+
+    term = report.term
+
+    if args.skip_testudo:
+        print("  --skip-testudo set; carried attributions left as they are")
+    else:
+        course_codes = sorted({record["course_code"] for record in records})
+        print(f"  scraping Testudo for {term_label(term)} ({len(course_codes)} courses)...")
+        try:
+            instructor_map = testudo_instructor_map(term, course_codes)
+        except Exception as err:  # noqa: BLE001 - a scrape failure must not lose the ingest
+            print(f"  WARNING: Testudo scrape failed ({err}).")
+            print("  Continuing with carried attributions only. Grade data is")
+            print("  still loaded; re-run with Testudo available to improve it.")
+            instructor_map = {}
+
+        if instructor_map:
+            counts = apply_testudo_attribution(records, instructor_map)
+            print(
+                f"  Testudo: {counts['upgraded']} sections attributed, "
+                f"{counts['unmatched']} not found in the scrape"
+            )
+
+    if args.print_output:
+        attributed = sum(1 for r in records if r.get("instructor_name"))
+        by_source = {}
+        for record in records:
+            by_source[record.get("instructor_source")] = by_source.get(record.get("instructor_source"), 0) + 1
+        print(f"  {attributed}/{len(records)} rows have an instructor")
+        for source, count in sorted(by_source.items(), key=lambda kv: str(kv[0])):
+            print(f"    {str(source):<10} {count}")
+        print("  --print-output set; database not written.")
+        return 0
+
+    client = db.get_supabase_client()
+
+    if not args.force and db.already_ingested(client, term, digest):
+        print(f"  {term_label(term)} already loaded from this exact file; use --force to reload")
+        return 0
+
+    print("  resolving instructor names...")
+    counts = resolve_instructor_ids(client, records, term)
+    print(f"  instructors: {counts['linked']} linked, {counts['queued']} queued for a human")
+
+    db.upsert_grades(client, records)
+    db.record_ingest(client, report, digest)
+    print(f"  wrote {len(records)} rows")
+
+    if args.skip_refresh:
+        print("  --skip-refresh set. The matviews are now STALE: the site will")
+        print("  serve pre-ingest numbers and look entirely healthy while doing")
+        print("  it. ci.py will fail until refresh_grade_matviews() is run.")
+        return 0
+
+    print("  refreshing materialized views...")
+    elapsed_ms = refresh_matviews(client, term, digest)
+    print(f"  refreshed in {elapsed_ms} ms")
+
+    if counts["queued"]:
+        print()
+        print(f"  {counts['queued']} name(s) went to instructor_match_queue.")
+        print("  Until they are triaged, those sections have no instructor_id and")
+        print("  will not appear on any professor page.")
+
+    return 0
+
+
 def run_verify(args: argparse.Namespace) -> int:
     sources = collect_sources(args.files, args.dir)
     failures = 0
@@ -217,6 +351,8 @@ def main() -> int:
     args = parse_args()
     if args.command == "ingest":
         return run_ingest(args)
+    if args.command == "ingest-term":
+        return run_ingest_term(args)
     if args.command == "verify":
         return run_verify(args)
     return run_terms()
