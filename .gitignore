@@ -1,3 +1,5 @@
 __pycache__
 
-.env
+.env__pycache__/
+.ci-counts.json
+archive/
