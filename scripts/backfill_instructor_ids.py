@@ -50,9 +50,13 @@ PAGE_SIZE = 1000
 # batch has to finish inside the timeout PostgREST enforces on the call.
 RESOLVE_BATCH = 250
 
-# Resolved names per apply_instructor_ids() call. Each entry is one UPDATE
-# predicate, not one statement, so this can be larger.
-APPLY_BATCH = 500
+# Resolved names per apply_instructor_ids() call.
+#
+# Measured at ~5.7s for 500 names against 200k grade rows, which is close
+# enough to the statement timeout that a slower batch would fail the run after
+# the expensive resolution phase had already succeeded. 200 leaves headroom;
+# the write-back is a small part of the total runtime either way.
+APPLY_BATCH = 200
 
 
 def distinct_instructor_names(client) -> dict[str, dict]:
