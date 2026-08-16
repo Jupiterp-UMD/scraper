@@ -16,18 +16,24 @@
 select '-- Captured ' || now()::text || E'\n';
 
 -- Views, in dependency order as far as pg_class ordering gives it.
+--
+-- Materialized views are included deliberately. `active_instructors` -- the
+-- one object this script exists to record -- is a MATERIALIZED view, so a
+-- filter on relkind = 'v' alone captures everything except the thing that
+-- matters and reports success while doing it.
 select E'\n/* ---------- views ---------- */\n';
 
 select format(
-           E'create or replace view %I as\n%s\n',
+           E'create %s%I as\n%s\n',
+           case c.relkind when 'm' then 'materialized view ' else 'or replace view ' end,
            c.relname,
            pg_get_viewdef(c.oid, true)
        )
 from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public'
-  and c.relkind = 'v'
-order by c.relname;
+  and c.relkind in ('v', 'm')
+order by c.relkind, c.relname;
 
 -- Table shapes. Not a faithful DDL dump — enough to diff against, and enough
 -- to notice a column that no migration here accounts for.

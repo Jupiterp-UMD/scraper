@@ -36,7 +36,31 @@ comment on table section_instructors is
 -- The previous definition matched on name strings against
 -- `sections.instructors`, which is exactly the failure mode this whole
 -- migration exists to remove: a professor whose Testudo spelling differs from
--- their `instructors.name` spelling silently drops out of the active list.
+-- their `instructors.name` spelling silently drops out of the active list:
+--
+--   create materialized view active_instructors as
+--   select distinct i.slug, i.name, i.average_rating
+--   from instructors i join sections s on i.name = any (s.instructors);
+--
+-- It was a MATERIALIZED view, not a plain one. `create or replace view` cannot
+-- convert between the two -- it fails with `"active_instructors" is not a
+-- view` -- so the old object is dropped explicitly first.
+--
+-- Replacing it with a plain view is the point, not a side effect. Nothing ever
+-- refreshed the matview: there is no pg_cron job in the database and no
+-- `refresh materialized view` anywhere in the scraper or the API, so it served
+-- whatever rows existed the last time someone ran a refresh by hand, and
+-- `/v0/instructors/active` has been answering from that. A plain view cannot
+-- go stale, and the exists() lookup on an indexed instructor_id is cheap
+-- enough that materializing it buys nothing.
+--
+-- Note the column set widens here: the old matview exposed three columns
+-- (slug, name, average_rating) and this exposes all of `instructors`, which
+-- 0006 then grants to anon. That is intentional -- the professor pages need
+-- the rating columns 0002 added -- but it does change the shape of the
+-- `/v0/instructors/active` response.
+drop materialized view if exists active_instructors;
+
 create or replace view active_instructors as
 select i.*
 from instructors i

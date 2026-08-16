@@ -345,3 +345,30 @@ create policy grades_public_read on grades
 drop policy if exists grade_ingests_public_read on grade_ingests;
 create policy grade_ingests_public_read on grade_ingests
     for select using (true);
+
+
+/* =============================== GRANTS ================================= */
+-- The policies above are inert without these. A role that holds no grant on a
+-- table cannot reach it at all, so `using (true)` filters rows for nobody --
+-- which presents as `permission denied for view grade_terms` rather than as an
+-- empty result, and only once something actually queries it.
+--
+-- Supabase projects do not necessarily have default privileges configured for
+-- `public` (this one does not: `pg_default_acl` is empty), so nothing grants
+-- these automatically just because the dashboard-created tables have them.
+--
+-- Duplicated by db/migrations/0010_grants.sql, which covers the objects the
+-- migration set adds. Both are idempotent; whichever runs second is a no-op.
+
+grant select on grades             to anon, authenticated;
+grant select on grade_ingests      to anon, authenticated;
+grant select on grade_terms        to anon, authenticated;
+grant select on course_grades      to anon, authenticated;
+grant select on course_term_grades to anon, authenticated;
+
+-- `course_instructor_grades` and `course_instructor_grades_all` are granted by
+-- migration 0006, which also replaces the former with a materialized view.
+
+grant select, insert, update, delete on grades        to service_role;
+grant select, insert, update, delete on grade_ingests to service_role;
+grant usage, select on sequence grade_ingests_id_seq  to service_role;

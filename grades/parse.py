@@ -21,6 +21,14 @@ Known variants, all handled:
      "Walsh, Shane Bolles" arrives split across two CSV fields.
   5. `GR_` prefixed header (Fall 2023 onward), in two spellings:
      `GR_A-`/`GR_A+` and `GR_AM`/`GR_AP`.
+  6. The `.repaired.csv` set: one uniform header across every term,
+     `TERM,COURSE,SECTION,INSTRUCTOR,TOTAL,A+,...,OTHER,UNGRADED,FILL_SOURCE,
+     FILL_CONFIDENCE,NOTES`. Instructor blanks have already been resolved
+     upstream, so ~95% of rows arrive named and the carry-forward below rarely
+     fires; `instructor_source` is therefore `reported` for essentially every
+     attributed row. `FILL_SOURCE` records how each name was actually arrived
+     at (`original`, `schedule-section`, `file-course-unanimous`, ...) and is
+     deliberately not read -- see README.
 
 Rows are yielded as plain dicts; nothing here touches the database or the
 filesystem beyond reading the file it was given.
@@ -108,6 +116,11 @@ HEADER_ALIASES = {
     "sect": "sec_code", "section": "sec_code", "lead|sect": "sec_code",
 
     "professor name": "instructor", "name": "instructor",
+    # Variant 6 (the `.repaired.csv` set). Without this the column is simply
+    # not mapped, and every row loads with a null instructor while the row
+    # counts and grade buckets all come out correct -- so the file parses,
+    # reports success, and yields 0% instructor coverage.
+    "instructor": "instructor",
 
     "total": "total", "tot": "total",
 

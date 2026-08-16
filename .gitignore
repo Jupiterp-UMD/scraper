@@ -13,3 +13,6 @@ __pycache__/
 # PlanetTerp snapshot archives and database dumps: real data, never committed.
 archive/
 .dumps/
+
+
+grades/data/
