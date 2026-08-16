@@ -38,29 +38,47 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from instructor_registry import SOURCE_REGISTRAR  # noqa: E402
-from names import is_denylisted, normalize_name  # noqa: E402
+# Normalization and the denylist now happen inside unlinked_instructor_names(),
+# so the Python implementations are no longer called here. They remain the
+# source of truth for the scraper and are checked against the SQL ones by
+# db/tests/name_parity.sql.
 
 PAGE_SIZE = 1000
+
+# Names per link_instructors_bulk() call. Sized against the statement timeout
+# rather than against memory: each name costs a resolve_instructor(), so a
+# batch has to finish inside the timeout PostgREST enforces on the call.
+RESOLVE_BATCH = 250
+
+# Resolved names per apply_instructor_ids() call. Each entry is one UPDATE
+# predicate, not one statement, so this can be larger.
+APPLY_BATCH = 500
 
 
 def distinct_instructor_names(client) -> dict[str, dict]:
     """
     Every distinct `instructor_name` in `grades`, with one example context.
 
-    Paged rather than pulled in one request: PostgREST caps a response at
-    1,000 rows by default and silently truncates past it, which would look
-    like a suspiciously good match rate rather than an error.
+    The aggregation happens in the database (`unlinked_instructor_names`)
+    rather than by paging 200k rows into Python to deduplicate them here. Still
+    paged, because PostgREST caps a response at 1,000 rows and silently
+    truncates past it, which would look like a suspiciously good match rate
+    rather than an error.
+
+    `variants` carries every raw spelling that normalizes to the same name.
+    "Jonathan K. Lazar" and "Jonathan K Lazar" are one person written two ways,
+    and the write-back has to update both -- keeping only the first spelling
+    seen is how grade rows end up permanently unlinked.
     """
     names: dict[str, dict] = {}
     offset = 0
 
     while True:
         page = (
-            client.table("grades")
-            .select("instructor_name, course_code, term, sec_code, instructor_source")
-            .not_.is_("instructor_name", "null")
-            .is_("instructor_id", "null")
-            .range(offset, offset + PAGE_SIZE - 1)
+            client.rpc(
+                "unlinked_instructor_names",
+                {"page_limit": PAGE_SIZE, "page_offset": offset},
+            )
             .execute()
             .data
         )
@@ -68,25 +86,20 @@ def distinct_instructor_names(client) -> dict[str, dict]:
             break
 
         for row in page:
-            raw = row["instructor_name"]
-            normalized = normalize_name(raw)
-            if normalized is None or is_denylisted(raw):
-                continue
-            if normalized not in names:
-                names[normalized] = {
-                    "raw": raw.strip(),
-                    "context": {
-                        "course_code": row["course_code"],
-                        "term": row["term"],
-                        "sec_code": row["sec_code"],
-                        "instructor_source": row["instructor_source"],
-                    },
-                    "rows": 0,
-                }
-            names[normalized]["rows"] += 1
+            names[row["name_norm"]] = {
+                "raw": row["observed"],
+                "variants": row["variants"],
+                "context": {
+                    "course_code": row["course_code"],
+                    "term": row["term"],
+                    "sec_code": row["sec_code"],
+                    "instructor_source": row["instructor_source"],
+                },
+                "rows": row["row_count"],
+            }
 
         offset += len(page)
-        print(f"  scanned {offset} unlinked grade rows, {len(names)} distinct names so far")
+        print(f"  {len(names)} distinct names so far")
         if len(page) < PAGE_SIZE:
             break
 
@@ -94,30 +107,56 @@ def distinct_instructor_names(client) -> dict[str, dict]:
 
 
 def resolve_all(client, names: dict[str, dict], create_missing: bool) -> dict[str, int]:
-    """Run every distinct name through the SQL resolver."""
+    """
+    Run every distinct name through the SQL resolver, a batch at a time.
+
+    One call per name meant ~14,000 round trips to resolve ~14,000 names, and
+    the round trip was the expensive part: the resolution itself is a few
+    milliseconds. `link_instructors_bulk` runs a whole batch server-side.
+
+    A batch is one statement, so a failure rolls the batch back rather than
+    leaving it half-applied. Re-running is free either way -- a name resolved
+    on a previous pass comes back as an exact alias hit.
+    """
     resolved: dict[str, int] = {}
     methods: Counter = Counter()
+    items = list(names.items())
 
-    for i, (normalized, info) in enumerate(names.items(), start=1):
-        instructor_id = client.rpc(
-            "link_instructor",
+    for start in range(0, len(items), RESOLVE_BATCH):
+        chunk = items[start : start + RESOLVE_BATCH]
+        batch = [
             {
+                "name_norm": normalized,
                 "observed": info["raw"],
-                "source": SOURCE_REGISTRAR,
                 "context": info["context"],
-                "create_if_missing": create_missing,
                 "seen_term": info["context"].get("term"),
-            },
-        ).execute().data
+            }
+            for normalized, info in chunk
+        ]
 
-        if instructor_id is None:
-            methods["queued"] += 1
-        else:
-            resolved[normalized] = instructor_id
-            methods["linked"] += 1
+        outcome = (
+            client.rpc(
+                "link_instructors_bulk",
+                {
+                    "batch": batch,
+                    "p_source": SOURCE_REGISTRAR,
+                    "p_create_if_missing": create_missing,
+                },
+            )
+            .execute()
+            .data
+            or []
+        )
 
-        if i % 250 == 0:
-            print(f"  resolved {i}/{len(names)} names ({methods['linked']} linked, {methods['queued']} queued)")
+        for entry in outcome:
+            if entry["instructor_id"] is None:
+                methods["queued"] += 1
+            else:
+                resolved[entry["name_norm"]] = entry["instructor_id"]
+                methods["linked"] += 1
+
+        done = min(start + RESOLVE_BATCH, len(items))
+        print(f"  resolved {done}/{len(items)} names ({methods['linked']} linked, {methods['queued']} queued)")
 
     return resolved
 
@@ -126,28 +165,30 @@ def apply_ids(client, names: dict[str, dict], resolved: dict[str, int]) -> int:
     """
     Write `instructor_id` back onto the grade rows.
 
-    Matched on the exact `instructor_name` string rather than on the normalized
-    form, because `instructor_name` is what the column actually holds and
-    PostgREST cannot filter on a function of a column. Several raw spellings
-    can normalize to the same key, so this groups them back out.
+    Matched on the exact `instructor_name` strings rather than on the
+    normalized form: `instructor_name` is what the column holds, and matching
+    it directly uses `grades_instructor_idx` where a function of the column
+    would not.
+
+    Every spelling that normalized to a resolved name is sent, not just the one
+    the aggregation happened to pick as representative. 14,045 raw spellings
+    collapse to 13,958 names, and the 87 that differ only in punctuation or
+    case belong to the same person -- updating one and not the others leaves
+    real grade rows unlinked, which shows up as a professor page missing terms
+    rather than as an error.
     """
-    by_id: dict[int, list[str]] = {}
-    for normalized, info in names.items():
-        instructor_id = resolved.get(normalized)
-        if instructor_id is not None:
-            by_id.setdefault(instructor_id, []).append(info["raw"])
+    entries = [
+        {"instructor_id": resolved[normalized], "variants": info["variants"]}
+        for normalized, info in names.items()
+        if normalized in resolved
+    ]
 
     updated = 0
-    for instructor_id, raws in by_id.items():
-        for raw in raws:
-            response = (
-                client.table("grades")
-                .update({"instructor_id": instructor_id})
-                .eq("instructor_name", raw)
-                .is_("instructor_id", "null")
-                .execute()
-            )
-            updated += len(response.data or [])
+    for start in range(0, len(entries), APPLY_BATCH):
+        chunk = entries[start : start + APPLY_BATCH]
+        updated += client.rpc("apply_instructor_ids", {"batch": chunk}).execute().data or 0
+        print(f"  wrote {min(start + APPLY_BATCH, len(entries))}/{len(entries)} names, {updated:,} rows so far")
+
     return updated
 
 
