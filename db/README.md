@@ -65,9 +65,43 @@ psql "$DATABASE_DIRECT_URL" -Atf db/baseline/capture.sql > db/baseline/current_s
 
 ## Rehearsing against a test project
 
-`clone_project.sh` copies the `public` schema and its data from one Supabase
-project into another, so the whole migration can be run somewhere a mistake
-costs nothing.
+Copy the `public` schema and its data from one Supabase project into another,
+so the whole migration can be run somewhere a mistake costs nothing. Two ways,
+depending on whether you have the database passwords.
+
+### Without a database password (`clone_via_api.py`)
+
+Authenticates with personal access tokens over the Supabase Management API, so
+there is no password to find and no connection to port 5432. Tokens are
+per-account, which makes cloning between two different accounts just two
+tokens.
+
+Generate one on each account at
+<https://supabase.com/dashboard/account/tokens>.
+
+```sh
+export SOURCE_PAT=sbp_...   SOURCE_REF=<prod-ref>
+export TARGET_PAT=sbp_...   TARGET_REF=<test-ref>
+
+python3 db/clone_via_api.py --dry-run              # inspect both, write nothing
+python3 db/clone_via_api.py --confirm <test-ref>   # the only form that writes
+```
+
+The project ref is the subdomain of your project URL —
+`https://<ref>.supabase.co`.
+
+Copies enum types, tables (including identity and generated columns), primary
+keys, unique and check constraints, foreign keys, indexes, views, materialized
+views, functions, RLS policies, grants, and all rows. It does *not* copy
+triggers, non-standard extensions, composite or domain types, or partitioned
+tables — but it detects them and says so rather than skipping silently.
+
+Slower than the `pg_dump` route, since every batch of rows is a round trip.
+
+### With a database password (`clone_project.sh`)
+
+Faster and more complete, using `pg_dump` and `pg_restore` directly. Needs the
+database password for both projects and a route to port 5432.
 
 ```sh
 brew install libpq
@@ -80,9 +114,14 @@ export TARGET_DB_URL='postgresql://postgres:...@db.<test>.supabase.co:5432/postg
 ./db/clone_project.sh --confirm <test-ref>   # the only form that writes
 ```
 
+### Both
+
 The target's `public` schema is dropped and recreated, so the confirmation
-argument has to be typed by hand: a copy-pasted connection string pointing at
-the wrong project is the one mistake here that cannot be undone.
+argument has to be typed by hand: a copy-pasted connection string or project
+ref pointing at the wrong project is the one mistake here that cannot be
+undone. Both refuse to run when source and target are the same project, and
+both end by comparing row counts, which is what actually decides whether the
+copy worked.
 
 Worth doing before touching production, because it answers the question nobody
 can estimate in advance. Clone, apply the migrations, then run
