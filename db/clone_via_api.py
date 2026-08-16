@@ -9,14 +9,17 @@ over the Supabase Management API, which authenticates with a personal access
 token instead. Since tokens are per-account, cloning between two accounts is
 just two tokens.
 
-    # https://supabase.com/dashboard/account/tokens  (on each account)
-    export SOURCE_PAT=sbp_...
-    export SOURCE_REF=abcdefghijklmnopqrst
-    export TARGET_PAT=sbp_...
-    export TARGET_REF=uvwxyzabcdefghijklmn
+    # Put the credentials in db/.env, which is gitignored:
+    #   SOURCE_PAT=sbp_...
+    #   SOURCE_REF=abcdefghijklmnopqrst
+    #   TARGET_PAT=sbp_...
+    #   TARGET_REF=uvwxyzabcdefghijklmn
+    #
+    # Tokens come from https://supabase.com/dashboard/account/tokens, one per
+    # account. Real environment variables take precedence over the file.
 
     python3 db/clone_via_api.py --dry-run             # inspect, write nothing
-    python3 db/clone_via_api.py --confirm $TARGET_REF
+    python3 db/clone_via_api.py --confirm <target-ref>
 
 The project ref is the subdomain in your project URL:
 `https://abcdefghijklmnopqrst.supabase.co`.
@@ -52,6 +55,9 @@ import urllib.request
 
 API = "https://api.supabase.com"
 
+# Where credentials are read from, if not already in the environment.
+ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
 # urllib's default User-Agent is blocked by Cloudflare in front of the
 # Management API, with an opaque 403. Any ordinary one works.
 USER_AGENT = "jupiterp-clone/1.0"
@@ -62,6 +68,36 @@ DEFAULT_BATCH = 500
 
 # Roles Supabase's PostgREST uses. Grants to anything else are not copied.
 SUPABASE_ROLES = ("anon", "authenticated", "service_role")
+
+
+def load_env_file(path: str = ENV_FILE) -> None:
+    """
+    Read `db/.env` into the environment, if it exists.
+
+    Parsed here rather than through python-dotenv so the script keeps working
+    with nothing installed. Values already set in the environment win, so
+    `SOURCE_REF=x python3 db/clone_via_api.py` still overrides the file.
+
+    Handles the `export KEY=value` form, because that is what you get from
+    copying the lines out of the README.
+    """
+    if not os.path.exists(path):
+        return
+
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
 
 class ApiError(RuntimeError):
@@ -451,13 +487,18 @@ def main() -> int:
                         help=f"Rows per round trip (default {DEFAULT_BATCH})")
     args = parser.parse_args()
 
+    load_env_file()
+
     try:
         source = Project(os.environ["SOURCE_REF"], os.environ["SOURCE_PAT"], "source")
         target_ref = os.environ["TARGET_REF"]
         target_pat = os.environ["TARGET_PAT"]
     except KeyError as missing:
         print(f"Missing environment variable: {missing}", file=sys.stderr)
-        print("\nNeeded: SOURCE_REF, SOURCE_PAT, TARGET_REF, TARGET_PAT", file=sys.stderr)
+        print(f"\nNeeded: SOURCE_REF, SOURCE_PAT, TARGET_REF, TARGET_PAT", file=sys.stderr)
+        print(f"\nPut them in {ENV_FILE} (gitignored), one per line:", file=sys.stderr)
+        print("\n  SOURCE_PAT=sbp_...\n  SOURCE_REF=<prod-ref>"
+              "\n  TARGET_PAT=sbp_...\n  TARGET_REF=<test-ref>\n", file=sys.stderr)
         print("Tokens come from https://supabase.com/dashboard/account/tokens", file=sys.stderr)
         print("-- one per account, if the projects are on different accounts.", file=sys.stderr)
         return 1
