@@ -22,6 +22,39 @@ export DATABASE_DIRECT_URL='postgresql://postgres:...@db.<ref>.supabase.co:5432/
 dashboard (Settings → Database), not `DATABASE_URL`, which points at the
 PostgREST endpoint the scraper uses.
 
+Rather than exporting it every time, put it in `db/.env`, which
+`clone_via_api.py`, `clone_project.sh`, and `migrate.sh` all read. See
+`.env.example`. Anything already exported wins over the file, so a one-off
+override against a different project still works:
+
+```sh
+DATABASE_DIRECT_URL=postgresql://... ./db/migrate.sh --dry-run
+```
+
+Note the variable is `DATABASE_DIRECT_URL`, not `DIRECT_DATABASE_URL`. The
+scripts do not accept the second spelling, and the failure looks like the
+variable was never set at all.
+
+### If the connection times out or reports "network is unreachable"
+
+`db.<ref>.supabase.co` publishes **only an AAAA record**. Supabase moved
+direct connections to IPv6 and made IPv4 a paid add-on, so on an IPv4-only
+network — which most home and campus networks still are — the direct string
+cannot be reached at all, no matter how correct the password is.
+
+Use the **Session pooler** string from the same dashboard page instead. It is
+IPv4 and looks different: a `postgres.<ref>` username and a pooler hostname.
+
+```sh
+DATABASE_DIRECT_URL='postgresql://postgres.<ref>:...@aws-0-<region>.pooler.supabase.com:5432/postgres'
+```
+
+**Port 5432, not 6543.** The pooler serves session mode on 5432 and
+transaction mode on 6543; transaction mode does not keep a session across
+statements, which is what `migrate.sh` needs to run a file inside one
+transaction. Pointing it at 6543 fails partway through a migration rather
+than refusing up front.
+
 The runner records each applied file in `schema_migrations` and refuses to
 re-apply one whose checksum has changed since. Editing a migration that has
 already run in production is therefore an error, not a silent no-op: write a

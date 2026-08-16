@@ -9,10 +9,17 @@
 #
 # Usage:
 #   DATABASE_DIRECT_URL=postgresql://... ./db/migrate.sh [--dry-run] [--to NNNN]
+#
+# DATABASE_DIRECT_URL may also be set in `db/.env`; anything already in the
+# environment overrides the file.
 
 set -euo pipefail
 
-MIGRATIONS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/migrations"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIGRATIONS_DIR="$HERE/migrations"
+
+source "$HERE/load_env.sh"
+load_env_file
 
 DRY_RUN=0
 STOP_AFTER=""
@@ -21,7 +28,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --to) STOP_AFTER="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -30,6 +37,9 @@ if [[ -z "${DATABASE_DIRECT_URL:-}" ]]; then
   echo "DATABASE_DIRECT_URL is not set." >&2
   echo "This is the session connection string from the Supabase dashboard" >&2
   echo "(Settings -> Database), not DATABASE_URL." >&2
+  echo >&2
+  echo "Export it, or put it in $HERE/.env (gitignored):" >&2
+  echo "  DATABASE_DIRECT_URL=postgresql://postgres:...@db.<ref>.supabase.co:5432/postgres" >&2
   exit 1
 fi
 

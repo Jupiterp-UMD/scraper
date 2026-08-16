@@ -13,6 +13,9 @@
 #   export SOURCE_DB_URL='postgresql://postgres:...@db.<src>.supabase.co:5432/postgres'
 #   export TARGET_DB_URL='postgresql://postgres:...@db.<dst>.supabase.co:5432/postgres'
 #
+# Both may instead be set in `db/.env`, alongside the tokens clone_via_api.py
+# reads; anything already in the environment overrides the file.
+#
 #   ./db/clone_project.sh --dry-run          # inspect both ends, write nothing
 #   ./db/clone_project.sh --dump-only        # produce the dump file, stop
 #   ./db/clone_project.sh --confirm <dst-ref>
@@ -25,6 +28,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$HERE/load_env.sh"
+load_env_file
+
 DUMP_DIR="${DUMP_DIR:-$HERE/../.dumps}"
 
 DRY_RUN=0
