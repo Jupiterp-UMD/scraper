@@ -38,8 +38,6 @@ load_env_file() {
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
 
-    # Whole-line comments only. An inline `#` is a password character far more
-    # often than it is a comment in this file.
     [[ -z "$line" || "$line" == '#'* ]] && continue
 
     [[ "$line" == "export "* ]] && line="${line#export }"
@@ -58,8 +56,22 @@ load_env_file() {
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
 
+    # Inline comments, matching python-dotenv so the Python and shell halves of
+    # this directory read one `.env` the same way. Only when the value is
+    # unquoted, and only on ` #` with leading whitespace -- a bare `#` is a
+    # perfectly ordinary password character.
+    #
+    # Getting this wrong is not loud. `KEY=abc # note` silently becomes the
+    # value "abc # note", which fails wherever it is used with an error about
+    # the credential rather than about the file it came from.
+    if [[ "${value:0:1}" != '"' && "${value:0:1}" != "'" && "$value" == *" #"* ]]; then
+      value="${value%%" #"*}"
+      value="${value%"${value##*[![:space:]]}"}"
+    fi
+
     # One layer of matching quotes, which is what wrapping a connection string
-    # in single quotes to protect it from the shell leaves behind.
+    # in single quotes to protect it from the shell leaves behind. Quoted
+    # values keep any `#` they contain.
     if [[ ${#value} -ge 2 && "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
       value="${value:1:${#value}-2}"
     elif [[ ${#value} -ge 2 && "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
