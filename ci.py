@@ -218,10 +218,6 @@ def _check_matview_freshness(client, failures: list):
         )
 
 
-if __name__ == "__main__":
-    verify_supabase_populated()
-
-
 def _check_every_professor_is_linkable(client, failures: list):
     """
     Every instructor a section names must resolve to a professor page.
@@ -311,3 +307,7 @@ def _check_every_professor_is_linkable(client, failures: list):
             f"should have either resolved or queued every name in the scrape, so a "
             f"name in neither state means it was dropped."
         )
+
+
+if __name__ == "__main__":
+    verify_supabase_populated()
