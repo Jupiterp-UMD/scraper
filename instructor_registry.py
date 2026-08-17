@@ -146,6 +146,21 @@ def reconcile_instructors(
     _rebuild_section_instructors(client, sections_data, resolved, report)
     _mark_active(client, list(resolved.values()), term)
 
+    # `sections.instructor_slugs` is what lets the site link a professor from a
+    # section without matching on their name. It is derived from the aliases
+    # this function just wrote, so it has to be recomputed here rather than by
+    # whatever wrote `sections` -- at upload time the names have not been
+    # resolved yet.
+    #
+    # Not fatal. A null slug array degrades to an unlinked professor name,
+    # which is worth far more than failing a scrape that has already uploaded
+    # everything else correctly.
+    try:
+        client.rpc("refresh_section_instructor_slugs", {}).execute()
+    except Exception as error:  # noqa: BLE001 - reported, never raised
+        print(f"WARNING: could not refresh section instructor slugs: {error}")
+        print("Professors will render unlinked in the planner until this is re-run.")
+
     return report
 
 

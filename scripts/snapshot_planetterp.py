@@ -59,7 +59,16 @@ def fetch_all(verbose: bool = True) -> list[dict]:
 
         response = requests.get(
             API,
-            params={"type": "professor", "limit": PAGE_SIZE, "offset": offset},
+            # `reviews=true` is what makes the review count available at all.
+            # The bare professors endpoint returns only
+            # average_rating/courses/name/slug/type -- there is no count field
+            # on it, so asking for one silently yields zero for every record.
+            params={
+                "type": "professor",
+                "limit": PAGE_SIZE,
+                "offset": offset,
+                "reviews": "true",
+            },
             headers={"User-Agent": "Jupiterp/1.0 (+https://jupiterp.com)"},
             timeout=30,
         )
@@ -123,7 +132,14 @@ def to_rows(records: list[dict], snapshot_at: str) -> list[dict]:
                 # stored the rating as text, which is why the site has a
                 # parseFloat helper. Store numerics as numerics.
                 "pt_average_rating": float(rating) if rating is not None else None,
-                "pt_review_count": int(record.get("num_reviews") or 0),
+                # Counted from the reviews array, not read from a `num_reviews`
+                # field -- PlanetTerp does not return one. Reading a key that is
+                # never present made this 0 for all 14,017 professors, which
+                # zeroed the PlanetTerp side of the blend: the rating model
+                # weights that average by how many reviews produced it, so a
+                # count of zero means no weight, no combined rating, and no
+                # rating displayed anywhere on the site.
+                "pt_review_count": len(record.get("reviews") or []),
                 "pt_snapshot_at": snapshot_at,
             }
         )

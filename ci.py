@@ -23,6 +23,7 @@ ones.
 """
 
 from db import get_supabase_client
+from names import is_denylisted
 import json
 import os
 from pathlib import Path
@@ -169,6 +170,7 @@ def verify_supabase_populated():
         )
 
     _check_matview_freshness(client, failures)
+    _check_every_professor_is_linkable(client, failures)
 
     try:
         COUNTS_FILE.write_text(json.dumps(current, indent=2))
@@ -218,3 +220,94 @@ def _check_matview_freshness(client, failures: list):
 
 if __name__ == "__main__":
     verify_supabase_populated()
+
+
+def _check_every_professor_is_linkable(client, failures: list):
+    """
+    Every instructor a section names must resolve to a professor page.
+
+    The planner renders instructor names from `sections.instructors` and links
+    each one using the slug at the same index of `instructor_slugs`, which the
+    API resolves through `instructor_aliases`. A null slug means that section
+    renders the professor as plain text: no link, no page, no grade chip, and
+    nothing on screen suggesting a page exists.
+
+    This is checked against `sections_with_instructors` rather than by joining
+    names against `active_instructors`, because joining on names is exactly the
+    bug this replaced -- Testudo writes `Aaron Kyei-Asare` where the canonical
+    record says `Aaron Kyei-asare`, and a name comparison drops the link while
+    both rows are perfectly correct.
+
+    A name still awaiting triage is reported but not failed: it is already
+    counted by the `instructor_match_queue` ceiling above, and failing twice
+    for one cause turns a real signal into noise. A name that resolves to
+    nothing *and* is not queued has no explanation, and that is the failure.
+    """
+    unresolved = {}
+    offset = 0
+    while True:
+        page = (
+            client.table("sections_with_instructors")
+            .select("course_code, sec_code, instructors, instructor_slugs")
+            .order("course_code")
+            .order("sec_code")
+            .range(offset, offset + 999)
+            .execute()
+            .data
+        )
+        if not page:
+            break
+        for row in page:
+            names = row.get("instructors") or []
+            slugs = row.get("instructor_slugs") or []
+            for index, name in enumerate(names):
+                cleaned = (name or "").strip()
+                if not cleaned or is_denylisted(cleaned):
+                    continue
+                slug = slugs[index] if index < len(slugs) else None
+                if not slug:
+                    unresolved.setdefault(cleaned, f"{row['course_code']} {row['sec_code']}")
+        offset += len(page)
+        if len(page) < 1000:
+            break
+
+    if not unresolved:
+        print("professor links: every scheduled instructor resolves to a page")
+        return
+
+    queued = set()
+    offset = 0
+    while True:
+        page = (
+            client.table("instructor_match_queue")
+            .select("observed")
+            .is_("resolved_at", "null")
+            .order("id")
+            .range(offset, offset + 999)
+            .execute()
+            .data
+        )
+        if not page:
+            break
+        queued.update((r.get("observed") or "").strip() for r in page)
+        offset += len(page)
+        if len(page) < 1000:
+            break
+
+    awaiting = sorted(n for n in unresolved if n in queued)
+    unexplained = sorted(n for n in unresolved if n not in queued)
+
+    print(
+        f"professor links: {len(unresolved)} scheduled instructor(s) have no page "
+        f"({len(awaiting)} awaiting triage, {len(unexplained)} unexplained)"
+    )
+    if unexplained:
+        sample = ", ".join(f"{n!r} ({unresolved[n]})" for n in unexplained[:6])
+        more = f" (+{len(unexplained) - 6} more)" if len(unexplained) > 6 else ""
+        failures.append(
+            f"{len(unexplained)} instructor(s) named in `sections` resolve to no "
+            f"instructor and are not in the triage queue, so the planner renders "
+            f"them as plain text with no link: {sample}{more}. reconcile_instructors() "
+            f"should have either resolved or queued every name in the scrape, so a "
+            f"name in neither state means it was dropped."
+        )
