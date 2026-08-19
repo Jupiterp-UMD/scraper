@@ -87,6 +87,44 @@ def test_natural_name_then_normalize_matches_testudo_order():
     assert first_last(registrar) == first_last(testudo) == "shane walsh"
 
 
+def test_natural_name():
+    assert not _check("natural_name", natural_name)
+
+
+def test_parse_natural_name_agrees_with_names_natural_name():
+    """
+    The fourth implementation.
+
+    `grades/parse.py` carries its own copy of `natural_name`, deliberately, so
+    the parser imports nothing outside its own directory. Nothing compared the
+    two, which left the shared-contract fixture covering three implementations
+    of normalization and only one of the two that reorder a registrar name.
+
+    This is the copy that matters most. It runs first, over every one of the
+    203,579 grade rows, and everything downstream matches against what it
+    produced -- so a divergence here does not raise an error anywhere, it just
+    quietly splits one professor's history across two records.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "grades"))
+    from parse import natural_name as parse_natural_name  # noqa: PLC0415
+
+    failures = []
+    for case in FIXTURES["natural_name"]:
+        theirs = parse_natural_name(case["input"])
+        if theirs != case["expected"]:
+            failures.append(
+                f"grades/parse.py natural_name({case['input']!r}) -> {theirs!r}, "
+                f"expected {case['expected']!r}"
+            )
+        ours = natural_name(case["input"])
+        if theirs != ours:
+            failures.append(
+                f"the two natural_name implementations disagree on {case['input']!r}: "
+                f"names.py -> {ours!r}, grades/parse.py -> {theirs!r}"
+            )
+    assert not failures, "\n".join(failures)
+
+
 def test_denylist_is_not_a_substring_test():
     """Real people whose names contain a denylisted token as a substring."""
     for name in ("Stafford Jones", "Tabatha Bacon", "Instructors Aide", "Staffordshire Bull"):
@@ -95,14 +133,29 @@ def test_denylist_is_not_a_substring_test():
 
 if __name__ == "__main__":
     all_failures = []
-    for group, fn in (
+    GROUPS = (
         ("normalize", normalize_name),
         ("slugify", slugify),
         ("denylisted", is_denylisted),
         ("first_last", first_last),
         ("surname", surname),
-    ):
+        ("natural_name", natural_name),
+    )
+    for group, fn in GROUPS:
         all_failures += _check(group, fn)
+
+    # The parser's own copy, which is the one that runs first and over
+    # everything. See test_parse_natural_name_agrees_with_names_natural_name.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "grades"))
+    from parse import natural_name as parse_natural_name
+
+    for case in FIXTURES["natural_name"]:
+        theirs = parse_natural_name(case["input"])
+        if theirs != case["expected"]:
+            all_failures.append(
+                f"grades/parse.py natural_name({case['input']!r}) -> {theirs!r}, "
+                f"expected {case['expected']!r}"
+            )
 
     if all_failures:
         print(f"{len(all_failures)} failure(s):")
@@ -110,5 +163,5 @@ if __name__ == "__main__":
             print("  " + failure)
         sys.exit(1)
 
-    total = sum(len(FIXTURES[g]) for g in ("normalize", "slugify", "denylisted", "first_last", "surname"))
+    total = sum(len(FIXTURES[g]) for g, _ in GROUPS)
     print(f"All {total} name fixtures pass.")

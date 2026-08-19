@@ -71,6 +71,34 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 1
 fi
 
+# Pre-flight: the one prerequisite that is not a migration.
+#
+# `grades/schema.sql` creates the `grades` and `grade_ingests` tables, and
+# migration 0004 alters `grades`. It is not in this directory and it is not in
+# the ledger, so nothing here enforces the ordering -- it lived only as a
+# sentence in the rollout runbook, which is precisely how it got missed the
+# first time. Applying 0004 without it fails with `relation "grades" does not
+# exist`, several migrations into a run, naming a table whose absence looks
+# like a much bigger problem than one skipped command.
+#
+# Checked once, up front, and only when 0004 is actually pending -- a database
+# that is already past it does not need to be told.
+if [[ -z "$(applied_checksum 0004)" ]]; then
+  has_grades="$(psql_do -Atc "select to_regclass('public.grades') is not null")"
+  if [[ "$has_grades" != "t" ]]; then
+    echo "ERROR: the 'grades' table does not exist, and migration 0004 alters it." >&2
+    echo >&2
+    echo "grades/schema.sql is a prerequisite of this migration set and is not part" >&2
+    echo "of it. Run it first (it is idempotent, so re-running is free):" >&2
+    echo >&2
+    echo "  psql \"\$DATABASE_DIRECT_URL\" -X -q -v ON_ERROR_STOP=1 -f $HERE/../grades/schema.sql" >&2
+    echo >&2
+    echo "Note it takes the direct psql connection string, not DATABASE_URL --" >&2
+    echo "that one is the PostgREST endpoint and psql cannot connect to it." >&2
+    exit 1
+  fi
+fi
+
 pending=0
 for file in "${files[@]}"; do
   base="$(basename "$file")"

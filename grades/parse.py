@@ -537,6 +537,41 @@ def parse_file(path: str | Path, term: int | None = None) -> tuple[list[dict], P
     if not records:
         raise ParseError(f"{path} parsed to zero rows; check the header mapping")
 
+    # An unmapped instructor column is a silent, total failure. Refuse it.
+    #
+    # This is the shape the `INSTRUCTOR` header bug had: the column was not in
+    # HEADER_ALIASES, so every row loaded with a null instructor while the row
+    # count, the grade buckets, the totals and the GPAs all came out exactly
+    # right. The file parsed, the ingest reported success, and 100% of the
+    # attribution was gone. Nothing downstream could tell -- the resolver had
+    # no names to fail on, and the professor pages were simply empty.
+    #
+    # No real registrar export names nobody at all: a file that hits this has a
+    # header this parser does not recognise, not unusual data. The check is
+    # zero-tolerance rather than a percentage for that reason -- a threshold
+    # would need a defensible number, and the only figure that is definitely
+    # wrong is none.
+    attributed = (
+        report.instructors_reported + report.instructors_lead + report.instructors_course
+    )
+    if attributed == 0:
+        raise ParseError(
+            f"{path} parsed {report.rows} rows and attributed an instructor to none of "
+            f"them. That is a header this parser does not recognise, not a property of "
+            f"the data -- check that HEADER_ALIASES covers whatever the instructor "
+            f"column is called in this file. Row counts and grade buckets come out "
+            f"correct either way, so nothing else will catch it."
+        )
+
+    # Short of nothing, low coverage is still worth saying out loud, since the
+    # rest of the pipeline degrades quietly rather than failing.
+    coverage = attributed / report.rows
+    if coverage < 0.5:
+        report.warnings.append(
+            f"only {attributed}/{report.rows} rows ({coverage:.0%}) have an instructor; "
+            f"expected around 99% for a registrar export"
+        )
+
     return records, report
 
 

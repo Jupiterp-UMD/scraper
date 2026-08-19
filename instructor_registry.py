@@ -198,9 +198,26 @@ def _rebuild_section_instructors(
 
     Testudo data is a snapshot, so this table is a snapshot too - a professor
     who stopped teaching a section must disappear from it, which an upsert
-    alone would not do. This is safe to truncate precisely because nothing
-    references it; `instructors` itself is never cleared, and `db.py` has a
-    guard to keep it that way.
+    alone would not do. This is safe to replace wholesale precisely because
+    nothing references it; `instructors` itself is never cleared, and `db.py`
+    has a guard to keep it that way.
+
+    The replacement goes through a staging table.
+
+    This used to delete the live rows a chunk of course codes at a time and
+    then insert the new ones a chunk at a time, over a dozen or more separate
+    requests with no transaction around them. `active_instructors` is a plain
+    view over this table, so for the whole of that sequence it was missing
+    everyone whose sections had been deleted and not yet re-inserted - and
+    momentarily it was empty. The course planner reads that view through an
+    endpoint cached for twelve hours by the API and twelve more by the browser,
+    so a single cache miss inside the window could pin an empty professor list
+    for a day, with nothing logging an error because the answer was accurate
+    when it was read.
+
+    Rows still upload in chunks - PostgREST rejects very large bodies, and a
+    failed chunk should be identifiable - but into a table nothing reads. The
+    visible switch is one statement in `swap_section_instructors`.
     """
     rows = []
     for section in sections_data:
@@ -222,12 +239,27 @@ def _rebuild_section_instructors(
     unique = list({(r["course_code"], r["sec_code"], r["instructor_id"]): r for r in rows}.values())
     report.section_links = len(unique)
 
-    scraped_courses = {s["course_code"] for s in sections_data}
-    for chunk in _chunked(sorted(scraped_courses)):
-        client.table("section_instructors").delete().in_("course_code", chunk).execute()
+    if not unique:
+        # The swap refuses an empty set, and it is right to. Say so here rather
+        # than letting the RPC raise, since this is the point where the reason
+        # is known: the scrape resolved no instructor to any section.
+        print(
+            "WARNING: no section-instructor links resolved; leaving the previous "
+            "scrape's links in place."
+        )
+        return
 
+    # Clear anything a previous interrupted run left behind, then upload.
+    client.table("section_instructors_staging").delete().neq("course_code", "").execute()
     for chunk in _chunked(unique):
-        client.table("section_instructors").insert(chunk).execute()
+        client.table("section_instructors_staging").insert(chunk).execute()
+
+    applied = client.rpc("swap_section_instructors", {}).execute().data
+    if applied is not None and int(applied) != len(unique):
+        print(
+            f"WARNING: staged {len(unique)} section links but the swap applied "
+            f"{applied}."
+        )
 
 
 def _mark_active(client: "Client", instructor_ids: list[int], term: int | None) -> None:
@@ -238,17 +270,27 @@ def _mark_active(client: "Client", instructor_ids: list[int], term: int | None) 
     directory filters and sorts on it, and a correlated subquery against
     `section_instructors` on every directory query is exactly the kind of thing
     that looks fine at 2,000 instructors and stops working at 20,000.
+
+    One RPC, not a clear-then-set.
+
+    This used to unset the flag for everyone in one request and then set it
+    again in chunks of 500 across six or more further requests, with nothing
+    holding a transaction over them. Between the first and the last, every
+    instructor read as inactive - and the professor directory, which filters on
+    exactly this column, would have shown nothing to anyone who loaded it then.
+    `set_active_instructors` does the whole swap in one statement, so there is
+    no moment at which the answer is neither the old set nor the new one.
     """
     if not instructor_ids:
+        # The SQL refuses this too. Returning here keeps the reason legible:
+        # a scrape that resolved nobody should leave the previous answer alone,
+        # not mark all 15,000 instructors inactive.
         return
 
-    client.table("instructors").update({"is_active": False}).eq("is_active", True).execute()
-
-    for chunk in _chunked(instructor_ids):
-        payload: dict = {"is_active": True}
-        if term is not None:
-            payload["last_seen_term"] = term
-        client.table("instructors").update(payload).in_("id", chunk).execute()
+    client.rpc(
+        "set_active_instructors",
+        {"p_ids": instructor_ids, "p_seen_term": term},
+    ).execute()
 
 
 def unresolved_queue_size(client: "Client") -> int:
