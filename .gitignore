@@ -16,3 +16,5 @@ archive/
 
 
 grades/data/
+# macOS noise
+.DS_Store

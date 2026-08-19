@@ -86,7 +86,6 @@ def test_introspection_sql_parses():
     assert project.statements, "no SQL was generated"
     failures = check_parses("introspection", project.statements)
     assert not failures, "\n".join(failures)
-    return len(project.statements)
 
 
 def test_table_name_with_quote_is_escaped():

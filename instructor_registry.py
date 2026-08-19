@@ -52,10 +52,12 @@ class ReconcileReport:
         self.section_links = 0
 
     def __str__(self) -> str:
+        # Every figure except `section_links` counts distinct normalized names,
+        # so they are comparable to each other and sum sensibly.
         return (
             f"{self.observed} distinct names: {self.resolved} resolved, "
             f"{self.created} created, {self.queued} queued, "
-            f"{self.denylisted} skipped as placeholders; "
+            f"{self.denylisted} distinct placeholders skipped; "
             f"{self.section_links} section links"
         )
 
@@ -98,12 +100,28 @@ def reconcile_instructors(
     """
     report = ReconcileReport()
 
-    total_named = sum(len(s.get("instructors") or []) for s in sections_data)
+    # Both counts are over DISTINCT normalized names, not over occurrences.
+    #
+    # `denylisted` used to count every occurrence across every section while
+    # `observed` counted distinct names, and the summary line presented the two
+    # as one series -- "12 distinct names: ... 340 skipped as placeholders".
+    # A large lecture course lists the same "Instructor: TBA" on thirty
+    # sections, so the placeholder figure was inflated by roughly the average
+    # section count and was not comparable to anything next to it. The
+    # docstring notes these feed CI thresholds, which is where a mismatched
+    # denominator stops being cosmetic.
     names = distinct_instructor_names(sections_data)
     report.observed = len(names)
-    report.denylisted = total_named - sum(
-        1 for s in sections_data for raw in (s.get("instructors") or []) if not is_denylisted(raw)
-    )
+
+    distinct_placeholders = {
+        normalized
+        for s in sections_data
+        for raw in (s.get("instructors") or [])
+        if is_denylisted(raw)
+        for normalized in (normalize_name(raw),)
+        if normalized is not None
+    }
+    report.denylisted = len(distinct_placeholders)
 
     if print_output:
         print(f"Would reconcile {len(names)} distinct instructor names for term {term}")
