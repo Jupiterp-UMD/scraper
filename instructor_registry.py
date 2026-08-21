@@ -206,14 +206,19 @@ def _rebuild_section_instructors(
 
     This used to delete the live rows a chunk of course codes at a time and
     then insert the new ones a chunk at a time, over a dozen or more separate
-    requests with no transaction around them. `active_instructors` is a plain
-    view over this table, so for the whole of that sequence it was missing
-    everyone whose sections had been deleted and not yet re-inserted - and
-    momentarily it was empty. The course planner reads that view through an
+    requests with no transaction around them. `active_instructors` was a plain
+    view over this table until 0035, so for the whole of that sequence it was
+    missing everyone whose sections had been deleted and not yet re-inserted -
+    and momentarily it was empty. The course planner reads that view through an
     endpoint cached for twelve hours by the API and twelve more by the browser,
     so a single cache miss inside the window could pin an empty professor list
     for a day, with nothing logging an error because the answer was accurate
     when it was read.
+
+    0035 moved the view onto `instructors.is_active`, so this table no longer
+    backs it. The swap stays atomic anyway: `instructor_match_queue_detail`
+    reads these rows, the foreign key to `instructors` lives here, and CI
+    checks the two against each other.
 
     Rows still upload in chunks - PostgREST rejects very large bodies, and a
     failed chunk should be identifiable - but into a table nothing reads. The
@@ -269,7 +274,10 @@ def _mark_active(client: "Client", instructor_ids: list[int], term: int | None) 
     `is_active` is a stored column rather than a view because the professor
     directory filters and sorts on it, and a correlated subquery against
     `section_instructors` on every directory query is exactly the kind of thing
-    that looks fine at 2,000 instructors and stops working at 20,000.
+    that looks fine at 2,000 instructors and stops working at 20,000. Since
+    0035 it is not merely the fast path but the definition: `active_instructors`
+    selects on it, so this call is what publishes the scrape's answer, and the
+    ordering below it matters.
 
     One RPC, not a clear-then-set.
 

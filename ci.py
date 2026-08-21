@@ -59,6 +59,13 @@ ACTIVE_INSTRUCTORS_FLOOR = 1000
 # shown what normal looks like.
 MATCH_QUEUE_CEILING = int(os.environ.get("MATCH_QUEUE_CEILING", "500"))
 
+# How far `is_active` and `section_instructors` may disagree before it is a
+# failure rather than a triage entry waiting for the next scrape. Small and
+# non-zero on purpose: link_instructor() creates an instructor with is_active
+# already true, so an admin resolving a queue entry between scrapes moves this
+# by one until the next run links them to a section.
+ACTIVE_DRIFT_CEILING = int(os.environ.get("ACTIVE_DRIFT_CEILING", "25"))
+
 
 def send_alert(subject: str, detail: str):
     """
@@ -145,9 +152,9 @@ def verify_supabase_populated():
     if count < ACTIVE_INSTRUCTORS_FLOOR:
         failures.append(
             f"`active_instructors` has {count} rows, below {ACTIVE_INSTRUCTORS_FLOOR}. "
-            f"Since this view is now keyed on instructor_id via section_instructors, "
-            f"a collapse here usually means reconcile_instructors() failed rather "
-            f"than that nobody is teaching."
+            f"Since 0035 this view is `instructors.is_active`, whose only writer "
+            f"refuses an empty scrape, so a collapse here usually means "
+            f"reconcile_instructors() failed rather than that nobody is teaching."
         )
 
     queued = (
@@ -171,6 +178,7 @@ def verify_supabase_populated():
 
     _check_matview_freshness(client, failures)
     _check_every_professor_is_linkable(client, failures)
+    _check_active_flag_matches_section_links(client, failures)
 
     try:
         COUNTS_FILE.write_text(json.dumps(current, indent=2))
@@ -188,6 +196,86 @@ def verify_supabase_populated():
         exit(1)
 
     print("Successfully verified all tables.")
+
+
+def _check_active_flag_matches_section_links(client, failures: list):
+    """
+    `is_active` and `section_instructors` must still describe the same people.
+
+    0035 made `instructors.is_active` the definition of active, so
+    `active_instructors` no longer consults `section_instructors` and a
+    disagreement between the two stopped being self-correcting. They are
+    written by two RPCs - `set_active_instructors` and
+    `swap_section_instructors` - that reconcile_instructors() calls in
+    sequence. Each is atomic; the pair is not. A scrape that dies between them
+    leaves the flag describing one run and the links describing another, and
+    nothing downstream notices: the professor page, the sitemap and
+    `activeOnly` read the flag, while the triage detail view reads the links.
+
+    Reported as a count rather than a list because the interesting cases are
+    "a handful" (an instructor created by triage between scrapes, which the
+    next run corrects) and "hundreds" (a half-finished scrape). Only the second
+    is a failure.
+    """
+    flagged = count_rows(client, "active_instructors")
+
+    linked = (
+        client.table("section_instructors")
+        .select("instructor_id", count="exact")
+        .limit(1)
+        .execute()
+        .count
+        or 0
+    )
+    if linked == 0:
+        # `swap_section_instructors` refuses to leave this table empty, so an
+        # empty read is a broken query, not a real answer. The row floors above
+        # already cover a genuine collapse.
+        return
+
+    # The flag is set from every instructor the scrape resolved, the links from
+    # every (section, instructor) pair it saw, so the two are equal in a healthy
+    # run. Compared as a ratio because both legitimately move between terms.
+    drift = abs(flagged - _distinct_linked_instructors(client))
+    print(f"active flag vs section links: {drift} instructor(s) differ")
+    if drift > ACTIVE_DRIFT_CEILING:
+        failures.append(
+            f"{drift} instructors differ between `is_active` and "
+            f"`section_instructors`, above the ceiling of "
+            f"{ACTIVE_DRIFT_CEILING}. Since 0035 only the flag is read by "
+            f"`/v1/instructors/active`, so this many professors are listed as "
+            f"teaching nothing, or teaching while unlisted. Most likely "
+            f"reconcile_instructors() failed between swap_section_instructors() "
+            f"and set_active_instructors(); re-running the scrape fixes it."
+        )
+
+
+def _distinct_linked_instructors(client) -> int:
+    """
+    How many distinct instructors `section_instructors` links to.
+
+    PostgREST has no `count(distinct)`, and the table is a snapshot of roughly
+    8,500 rows, so this pages the ids and counts them here rather than adding a
+    view for one CI check.
+    """
+    seen = set()
+    offset = 0
+    while True:
+        page = (
+            client.table("section_instructors")
+            .select("instructor_id")
+            .order("instructor_id")
+            .range(offset, offset + 999)
+            .execute()
+            .data
+        )
+        if not page:
+            break
+        seen.update(row["instructor_id"] for row in page)
+        offset += len(page)
+        if len(page) < 1000:
+            break
+    return len(seen)
 
 
 def _check_matview_freshness(client, failures: list):
