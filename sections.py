@@ -66,6 +66,33 @@ def parse_meeting(div: BeautifulSoup):
 
     return f'{days}-{start}-{end}-{location}'
 
+def parse_waitlist_and_holdfile(div: BeautifulSoup):
+    '''
+    Returns `(waitlist, holdfile)` for a section.
+
+    Testudo renders both counts as `waitlist-count` spans inside a single
+    `waitlist` wrapper, telling them apart only by the `seats-info-label` that
+    precedes each one. A section that doesn't run a waitlist still gets the
+    wrapper, but it holds just the help link and no counts at all - roughly 9%
+    of sections in a term - so reading the spans by position raises
+    `IndexError` on those and kills the whole scrape.
+    '''
+    counts = {}
+    spans = div.find_all('span', class_='waitlist-count')
+    for index, span in enumerate(spans):
+        label = span.find_previous_sibling('span', class_='seats-info-label')
+        if label != None:
+            key = label.get_text().strip().rstrip(':').lower()
+        else:
+            # Testudo always renders the waitlist before the holdfile, so
+            # document order identifies them if the labels ever go away.
+            key = 'waitlist' if index == 0 else 'holdfile'
+        counts[key] = int(span.get_text())
+
+    # An absent waitlist means the section has no waitlist rather than an empty
+    # one, but every consumer of this data models that as zero people waiting.
+    return counts.get('waitlist', 0), counts.get('holdfile')
+
 def parse_section(div: BeautifulSoup, course: str):
     sec_code = div.find('input', {'name': 'sectionId'})['value']
     instructors = list(
@@ -75,9 +102,7 @@ def parse_section(div: BeautifulSoup, course: str):
     meetings = list(map(parse_meeting, meetings_divs))
     open_seats = int(div.find('span', class_='open-seats-count').get_text())
     total_seats = int(div.find('span', class_='total-seats-count').get_text())
-    try_waitlist_holdfile = div.find_all('span', class_='waitlist-count')
-    waitlist = int(try_waitlist_holdfile[0].get_text())
-    holdfile = None if len(try_waitlist_holdfile) == 1 else try_waitlist_holdfile[1].get_text()
+    waitlist, holdfile = parse_waitlist_and_holdfile(div)
     
     return {
         "course_code": course,
