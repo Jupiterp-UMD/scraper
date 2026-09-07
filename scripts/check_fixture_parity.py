@@ -20,6 +20,7 @@ outputs.
     python3 scripts/check_fixture_parity.py                    # find the site checkout
     python3 scripts/check_fixture_parity.py path/to/names.json # explicit path
     python3 scripts/check_fixture_parity.py --url              # fetch from GitHub (CI)
+    python3 scripts/check_fixture_parity.py --url --ref main   # fetch a named ref
 
 Exits non-zero and prints the differing cases when the two have drifted.
 """
@@ -28,7 +29,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -44,8 +49,8 @@ SITE_CANDIDATES = [
     Path("..") / SITE_RELATIVE,
 ]
 
-RAW_URL = (
-    "https://raw.githubusercontent.com/atcupps/Jupiterp/main/"
+RAW_URL_TEMPLATE = (
+    "https://raw.githubusercontent.com/atcupps/Jupiterp/{ref}/"
     "site/src/lib/professor/__fixtures__/names.json"
 )
 
@@ -102,6 +107,83 @@ def describe_drift(canonical: dict, other: dict) -> list[str]:
     return problems
 
 
+def candidate_refs(explicit: str | None) -> list[str]:
+    """
+    Refs to look for the site's copy on, in the order to try them.
+
+    This used to be `main` alone, which 404s for as long as a cross-repo change
+    is in flight: the site's copy of the fixture lands on the site's branch,
+    not on its `main`, so the file this asks for does not exist yet. Comparing
+    against `main` would be wrong even once it did resolve -- that is the
+    version from before the change, so it would either 404 or report a drift
+    that is really just the feature not having landed.
+
+    A change like this carries the same branch name in all four repositories,
+    so the matching branch is the right thing to compare against while the work
+    is open, and `main` is right once it has merged and the branch is gone.
+    Trying the branch first and falling back to `main` is correct in both
+    states without anyone having to remember to flip it back.
+    """
+    if explicit:
+        return [explicit]
+
+    refs: list[str] = []
+
+    # In CI. `GITHUB_HEAD_REF` is set only for `pull_request` events, where
+    # `GITHUB_REF_NAME` is the synthetic "123/merge" rather than a real branch;
+    # for `push` events `GITHUB_REF_NAME` is the branch itself.
+    head_ref = os.environ.get("GITHUB_HEAD_REF", "").strip()
+    ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+    if head_ref:
+        refs.append(head_ref)
+    elif ref_name and not re.fullmatch(r"\d+/merge", ref_name):
+        refs.append(ref_name)
+
+    # Only when nothing said which branch is under test: whatever is checked
+    # out here. Under `actions/checkout` this is a detached HEAD and yields
+    # nothing, which is why it is a fallback rather than the first source.
+    if not refs:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=Path(__file__).resolve().parent.parent,
+            )
+            branch = result.stdout.strip()
+            if result.returncode == 0 and branch and branch != "HEAD":
+                refs.append(branch)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    # Always last, and always the end of the line: once the branch under test
+    # is `main` there is nothing further to fall back to.
+    refs.append("main")
+
+    seen: set[str] = set()
+    return [ref for ref in refs if not (ref in seen or seen.add(ref))]
+
+
+def fetch_site_copy(refs: list[str]) -> tuple[dict, str]:
+    """Fetch the site's fixture from the first ref that has one."""
+    missing: list[str] = []
+    for ref in refs:
+        url = RAW_URL_TEMPLATE.format(ref=ref)
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                return load(response.read().decode("utf-8"), is_text=True), url
+        except urllib.error.HTTPError as error:
+            # A 404 means this ref does not carry the file; anything else
+            # (rate limiting, an outage) is not something to paper over by
+            # quietly trying the next ref.
+            if error.code != 404:
+                raise
+            missing.append(ref)
+
+    raise LookupError(", ".join(missing))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", nargs="?", help="path to the site's names.json")
@@ -110,14 +192,28 @@ def main() -> int:
         action="store_true",
         help="fetch the site's copy from GitHub instead of the filesystem",
     )
+    parser.add_argument(
+        "--ref",
+        help="branch or tag to fetch the site's copy from; defaults to the "
+        "branch under test, then main",
+    )
     args = parser.parse_args()
 
     canonical = load(str(CANONICAL))
 
     if args.url:
-        with urllib.request.urlopen(RAW_URL, timeout=30) as response:
-            other = load(response.read().decode("utf-8"), is_text=True)
-        source = RAW_URL
+        refs = candidate_refs(args.ref)
+        try:
+            other, source = fetch_site_copy(refs)
+        except LookupError as error:
+            print(
+                f"None of these refs of the site repository have a copy of "
+                f"the fixture: {error}.\n"
+                "The site keeps it at "
+                f"{SITE_RELATIVE}; pass --ref to name the branch it is on.",
+                file=sys.stderr,
+            )
+            return 2
     else:
         path = Path(args.path) if args.path else find_site_copy()
         if path is None:
