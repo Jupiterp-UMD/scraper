@@ -1,0 +1,10 @@
+# Test-only dependencies.
+#
+# Kept separate from requirements.txt because that file is also installed by
+# the scheduled scraper runs (courses.yml, sections.yml), which have no reason
+# to pull a test runner onto every invocation. CI installs this file instead;
+# the include below brings the runtime pins with it, so `pip install -r
+# requirements-dev.txt` is the single command that sets up a test environment.
+-r requirements.txt
+
+pytest==9.1.1
