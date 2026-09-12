@@ -5,20 +5,15 @@ and are applied with the [Supabase CLI](https://supabase.com/docs/guides/cli).
 This directory holds everything around them: the baseline capture, the
 name-parity check, and the scripts that clone production into a test project.
 
-There is one migration, `20260912200959_grades_instructors_reviews.sql`. It is
-everything the grade/PlanetTerp work adds on top of the schema production
-already had, and it replaces `grades/schema.sql` and the numbered
-`db/migrations/0001`–`0036` that `db/migrate.sh` applied during the rehearsal.
-Those files are in git history (last present at `b66e3ca`), along with the
-reasoning behind most of what the migration does.
+There are two migrations:
 
-It is a **delta, not a full schema**. `courses`, `sections`, `departments`,
-`instructors` and `user_data` were created in the Supabase dashboard and appear
-in no migration, so the migration alters them rather than creating them. That
-means `supabase start` and `supabase db reset` cannot build a local database
-from this repository yet. Getting there needs the production baseline (below)
-committed as an earlier migration and marked as applied on production with
-`supabase migration repair`.
+| File | What |
+| :-- | :-- |
+| `20260912200000_prod_baseline.sql` | Production's schema before the grade work: the dashboard-made `courses`, `sections`, `departments`, `instructors`, `user_data`, `dept_codes`, and the old `active_instructors` matview. Dumped with `supabase db dump --linked`. |
+| `20260912200959_grades_instructors_reviews.sql` | Everything the grade/PlanetTerp work adds. Replaces `grades/schema.sql` and the numbered `db/migrations/0001`–`0036` that `db/migrate.sh` applied during the rehearsal; those are in git history (last present at `b66e3ca`), with the reasoning behind most of it. |
+
+Together they build the whole schema from an empty database. Production already
+has everything in the baseline, so there it is **marked as applied, never run**.
 
 ## Applying
 
@@ -32,7 +27,20 @@ npx supabase migration list --db-url "$DATABASE_DIRECT_URL"      # local vs. app
 ```
 
 `npx supabase link --project-ref <ref>` and then `--linked` in place of
-`--db-url` works too, and prompts for the database password.
+`--db-url` works too. Without a stored password the CLI connects through a
+temporary login role it creates on the project, and switches to `postgres`, so
+objects are still owned by `postgres`.
+
+### First push to production, or to a clone of it
+
+Those databases already have the baseline's tables. Record it as applied first,
+or `db push` tries to create them again:
+
+```sh
+npx supabase migration repair 20260912200000 --status applied --linked   # writes only the ledger
+npx supabase db push --linked --dry-run   # expect only 20260912200959_grades_instructors_reviews.sql
+npx supabase db push --linked
+```
 
 `db push` runs each migration file, and the row recording it in
 `supabase_migrations.schema_migrations`, in a single transaction. A failure
@@ -101,28 +109,35 @@ statements, and transaction mode does not keep a session across them.
 
 ## Baseline
 
-The dashboard-made tables and the original `active_instructors` materialized
-view are defined **only in the production database**. The migration drops
-`active_instructors`, so capture production's schema before pushing to it —
-otherwise there is no record of what was replaced.
+The dashboard-made objects are recorded in `20260912200000_prod_baseline.sql`,
+dumped from production on 2026-09-12, before the grades migration touched it.
 
-```sh
-psql "$PROD_DIRECT_URL" -Atf db/baseline/capture.sql > db/baseline/prod_schema.sql
-```
+A schema dump cannot see pg_cron jobs. Production had one, "Refresh
+active_instructors view", calling `refresh_active_instructors()` every night;
+the grades migration unschedules it, because it drops that function.
 
-`baseline/current_schema.sql` is an earlier, partial capture recovered from the
-rehearsal clone.
+`baseline/capture.sql` and `baseline/current_schema.sql` predate the baseline
+migration and are kept for reference.
 
 ## Moving the rehearsal clone onto the CLI
 
-The clone had `0001`–`0036` applied by `migrate.sh`, which is the schema this
-migration produces, recorded in the old `public.schema_migrations` ledger. Mark
-the migration as applied there instead of running it again, then drop the old
-ledger:
+The clone had `0001`–`0036` applied by `migrate.sh`, which is the schema these
+migrations produce, recorded in the old `public.schema_migrations` ledger. Mark
+both as applied there instead of running them, then drop the old ledger:
 
 ```sh
-npx supabase migration repair 20260912200959 --status applied --db-url "$DATABASE_DIRECT_URL"
+npx supabase migration repair 20260912200000 20260912200959 --status applied --db-url "$DATABASE_DIRECT_URL"
 psql "$DATABASE_DIRECT_URL" -c "drop table public.schema_migrations;"
+```
+
+The clone is missing grants the migration now makes explicitly. Without them a
+scrape against it fails at the staging swap:
+
+```sql
+grant select, insert, update, delete on section_instructors_staging to service_role;
+grant execute on function set_active_instructors(bigint[], int),
+                          swap_section_instructors(),
+                          prune_rate_limits(interval) to service_role;
 ```
 
 ## Rehearsing against a test project
@@ -185,8 +200,9 @@ undone. Both refuse to run when source and target are the same project, and
 both end by comparing row counts, which is what actually decides whether the
 copy worked.
 
-A fresh clone of production is pre-migration, so the migration pushes onto it
-exactly as it will onto production. Worth doing before touching production,
+A fresh clone of production is pre-migration, so after the same baseline
+`migration repair` the migration pushes onto it exactly as it will onto
+production. Worth doing before touching production,
 because it answers the question nobody can estimate in advance: clone, push the
 migration, then run `scripts/backfill_instructor_ids.py --dry-run` against the
 copy. The match rate it prints is what decides how much manual triage the real
@@ -204,7 +220,7 @@ looks correct and is empty.
 | Step | What | Where |
 | :-- | :-- | :-- |
 | 1 | Capture the production baseline | `baseline/capture.sql` |
-| 2 | Push the migration, then reload PostgREST's schema cache | `supabase db push` |
+| 2 | Mark the baseline applied, push the migration, reload PostgREST's schema cache | `supabase migration repair`, `supabase db push` |
 | 3 | Name parity: every query returns zero rows | `tests/name_parity.sql` |
 | 4 | Load grade data | `grades/main.py ingest` |
 | 5 | **PlanetTerp snapshot** — cannot be redone | `scripts/snapshot_planetterp.py` |

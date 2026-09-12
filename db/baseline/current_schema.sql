@@ -19,9 +19,10 @@
 
 -- `active_instructors`, as it existed before 0003 replaced it.
 --
--- Materialized, and nothing refreshed it: no pg_cron job existed in the
--- database and no `refresh materialized view` appears anywhere in the scraper
--- or the API. Its contents were therefore as old as the last manual refresh.
+-- Materialized. The clone showed no pg_cron job, but production had one:
+-- "Refresh active_instructors view" called refresh_active_instructors() every
+-- night at 00:15 UTC (found 2026-09-12). Nothing in the scraper or the API
+-- refreshed it.
 --
 -- The name-matching join is the failure this migration set exists to remove --
 -- an instructor whose Testudo spelling differs from `instructors.name` drops

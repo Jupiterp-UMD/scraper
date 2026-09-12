@@ -9,8 +9,9 @@
 -- reasoning behind much of what is here; comments below and inside function
 -- bodies that cite a four-digit number refer to them.
 --
--- It is a delta, not a full schema. It alters the baseline tables rather than
--- creating them, so it cannot build an empty database on its own.
+-- It applies on top of `20260912200000_prod_baseline.sql`, production's schema
+-- as dumped before this migration. Production already has that schema, so there
+-- the baseline is marked applied with `supabase migration repair`, not run.
 --
 -- `supabase db push` runs the whole file and its ledger row in one
 -- transaction: a failure anywhere leaves the database exactly as it was.
@@ -1414,8 +1415,9 @@ comment on view rating_sensitivity_sweep is
 
 -- The dashboard version was a materialized view matching `instructors.name`
 -- against `sections.instructors` -- the name join this whole migration exists
--- to remove -- and nothing ever refreshed it. `create or replace view` cannot
--- convert a matview, so it is dropped first.
+-- to remove -- refreshed once a night by a pg_cron job, which is unscheduled
+-- further down. `create or replace view` cannot convert a matview, so it is
+-- dropped first.
 --
 -- `instructors.is_active` is the single definition of active: it is what
 -- `/v1/instructors?activeOnly=true` filters on, and its only writer refuses an
@@ -2592,6 +2594,62 @@ alter table rate_limit_counters         enable row level security;
 -- API handlers are the perimeter, and this has to hold when one of them is
 -- wrong.
 
+-- Every object created above starts from no grants at all.
+--
+-- Supabase projects normally carry default privileges that hand anon,
+-- authenticated and service_role ALL on anything new in `public`. Production
+-- has them; the rehearsal clone does not. Left in place they would let anon
+-- write `rating_config`, which has no RLS, and update or delete rows through
+-- `active_instructors`, `sections_with_instructors` and
+-- `instructor_match_queue_detail` -- simple views run as their owner, so the
+-- tables' RLS never applies. Revoking first makes the grants below the whole
+-- access model on either kind of project.
+revoke all
+    on table grades, grade_ingests, instructor_aliases, instructor_match_queue,
+             section_instructors, section_instructors_staging,
+             reviews, review_tokens, review_reports, moderation_decisions,
+             email_outbox, rate_limit_counters, rating_config,
+             grade_terms, course_instructor_grades, instructor_grades,
+             course_grades, course_term_grades, course_instructor_grades_all,
+             instructor_term_grades, instructor_course_terms,
+             active_instructors, sections_with_instructors, public_reviews,
+             rating_sensitivity_sweep, instructor_match_auto_resolved,
+             instructor_match_queue_detail
+    from anon, authenticated, service_role;
+
+revoke all
+    on sequence instructors_id_seq, grade_ingests_id_seq, instructor_match_queue_id_seq,
+                email_outbox_id_seq, moderation_decisions_id_seq, review_reports_id_seq
+    from anon, authenticated, service_role;
+
+revoke all
+    on function normalize_name(text),
+                slugify(text),
+                is_instructor_denylisted(text),
+                name_surname(text),
+                name_first(text),
+                name_first_last(text),
+                umd_gpa(int, int, int, int, int, int, int, int, int, int, int, int, int),
+                touch_updated_at(),
+                next_instructor_slug(text),
+                bump_rate_limit(text, text, interval),
+                prune_rate_limits(interval),
+                compute_instructor_ratings(numeric, numeric, numeric, numeric, numeric),
+                refresh_instructor_ratings(),
+                resolve_instructor(text),
+                link_instructor(text, text, jsonb, boolean, int),
+                unlinked_instructor_names(int, int),
+                link_instructors_bulk(jsonb, text, boolean),
+                apply_instructor_ids(jsonb),
+                override_instructor_match(text, bigint, text),
+                merge_instructors(bigint, bigint[], text, boolean),
+                resolve_instructor_match(bigint, text, bigint, text, bigint[], boolean),
+                set_active_instructors(bigint[], int),
+                swap_section_instructors(),
+                refresh_section_instructor_slugs(),
+                refresh_grade_matviews()
+    from anon, authenticated, service_role;
+
 -- Public reads.
 grant select on grades        to anon, authenticated;
 grant select on grade_ingests to anon, authenticated;
@@ -2616,9 +2674,10 @@ grant select on instructor_match_auto_resolved, instructor_match_queue_detail to
 
 -- The scraper, the grade loader, the backfill, and the API's write client.
 grant select, insert, update, delete
-    on grades, grade_ingests, section_instructors, instructor_aliases,
-       instructor_match_queue, reviews, review_tokens, review_reports,
-       moderation_decisions, email_outbox, rate_limit_counters, rating_config
+    on grades, grade_ingests, section_instructors, section_instructors_staging,
+       instructor_aliases, instructor_match_queue, reviews, review_tokens,
+       review_reports, moderation_decisions, email_outbox, rate_limit_counters,
+       rating_config
     to service_role;
 
 -- `serial` columns only. Identity columns advance without sequence privileges.
@@ -2689,13 +2748,36 @@ revoke all
                 prune_rate_limits(interval)
     from public, anon, authenticated;
 
+-- The scrape's two snapshot swaps and the API's hourly sweep. Named here
+-- rather than left to default privileges, which a project may not have: without
+-- them the scrape fails at the swap.
+grant execute
+    on function set_active_instructors(bigint[], int),
+                swap_section_instructors(),
+                prune_rate_limits(interval)
+    to service_role;
+
 alter default privileges in schema public
     revoke execute on functions from public;
 
 
--- Created in the dashboard, so it appears in no file here. It refreshed the
--- matview dropped above, so every call now raises -- on anon's public RPC
--- surface.
+-- Created in the dashboard, and called nightly on production by the pg_cron job
+-- "Refresh active_instructors view". The matview it refreshed is gone, so the
+-- job would fail every night and the function would raise on anon's public
+-- RPC surface; both go. Guarded, because a project without pg_cron (the clone,
+-- a local stack) has no job to remove.
+do $$
+declare
+    job record;
+begin
+    if to_regclass('cron.job') is null then
+        return;
+    end if;
+    for job in select jobid from cron.job where command ilike '%refresh_active_instructors%' loop
+        perform cron.unschedule(job.jobid);
+    end loop;
+end $$;
+
 drop function if exists refresh_active_instructors();
 
 -- Fail this migration, rather than ship, if anything in `public` is still
