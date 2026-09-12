@@ -3,8 +3,8 @@
 Every table, matview and view in the `public` schema: what it holds, what
 writes it, what reads it, and what is easy to get wrong about it.
 
-`README.md` in this directory covers how migrations are applied. This file
-covers what they produced.
+`README.md` in this directory covers how the migration is applied. This file
+covers what it produced.
 
 Row counts are a snapshot taken **2026-08-21** against the rehearsal clone
 `dyoqrtratubmehumbbhx`, not production. Catalog, instructor and grade counts
@@ -94,7 +94,7 @@ PlanetTerp provenance (`pt_slug`, `pt_average_rating`, `pt_review_count`,
 `jupiterp_review_count`, `combined_rating`, `average_rating`), and activity
 (`first_seen_term`, `last_seen_term`, `is_active`).
 
-> `is_active` is the **definition** of "currently teaching" since 0035 —
+> `is_active` is the **definition** of "currently teaching" —
 > `active_instructors` selects on it and `/v1/instructors?activeOnly=true`
 > filters on it. Its only writer is `set_active_instructors()`. Do not set it
 > by hand.
@@ -159,7 +159,7 @@ decisions.
 `sections.instructors[]`. Answers "which instructors are teaching right now"
 without a name match.
 
-Since 0035 it no longer backs `active_instructors`. It remains the
+It does not back `active_instructors`. It remains the
 foreign-key record tying sections to instructor ids, the source of the
 per-candidate "sections now" count in triage, and CI's cross-check against
 `is_active`.
@@ -312,7 +312,7 @@ silently never arrives and the review is approved anyway.
 Sliding-window counters keyed `(bucket, action, window_start)`. `bucket` is a
 hashed identifier, never a raw IP.
 
-Rewritten in 0033: the original fixed windows aligned to midnight allowed a
+Sliding rather than fixed: windows aligned to midnight allowed a
 double burst either side of a boundary, and a rounding bug (`::bigint` on a
 numeric *rounds*) opened a hole in the last half-second of every window.
 
@@ -341,12 +341,16 @@ gets the same answer the page shows.
 
 ## Operational
 
-### `schema_migrations` — 36 rows
+### `supabase_migrations.schema_migrations`
 
-The migration ledger: `version`, `filename`, `checksum`, `applied_at`. Written
-by `migrate.sh` inside the same transaction as the migration it records, which
-is what makes "applied" and "actually ran" the same statement. The checksum is
-what refuses a migration edited after it ran.
+The migration ledger, outside `public`: one row per applied migration
+(`version`, `name`, `statements`), written by `supabase db push` in the same
+transaction as the migration it records. It stores no checksum, so a migration
+edited after it ran is not detected.
+
+The clone still carries the pre-squash ledger, `public.schema_migrations` (36
+rows, written by the retired `migrate.sh`), until it is moved onto the CLI;
+see `README.md`.
 
 ### `user_data` — 0 rows
 
@@ -367,14 +371,14 @@ merge — leaves them stale until it is called.
 | :-- | --: | :-- | :-- |
 | `course_instructor_grades` | 43,762 | Grade distribution per (course, instructor), the professor-page grade chip | `/grades/summary` |
 | `instructor_grades` | 12,152 | Per-instructor totals across all courses | `/grades/summary`, `ci.py` |
-| `grade_terms` | 31 | Per-term totals and GPA. Materialized in 0029 because as a plain view it was a full aggregate over 203k rows on every cache miss — ~2s against the anon role's 3s statement timeout | `/grades/terms` |
+| `grade_terms` | 31 | Per-term totals and GPA. Materialized because as a plain view it was a full aggregate over 203k rows on every cache miss — ~2s against the anon role's 3s statement timeout | `/grades/terms` |
 
 ## Views
 
 | Object | Purpose | Read by | Public |
 | :-- | :-- | :-- | :--: |
-| `active_instructors` | Instructors currently teaching. `select * from instructors where is_active` since 0035; was defined over `section_instructors` before that | `/v1/instructors/active` | yes |
-| `sections_with_instructors` | `sections` including `instructor_slugs`. Kept as a stable name for clients after 0025 moved the column onto the table | `/sections`, `ci.py` | yes |
+| `active_instructors` | Instructors currently teaching. `select * from instructors where is_active` | `/v1/instructors/active` | yes |
+| `sections_with_instructors` | `sections` including `instructor_slugs`. Kept as a stable name for clients now that the column lives on the table | `/sections`, `ci.py` | yes |
 | `public_reviews` | The only public path to review content. Approved rows only; identity columns are not selectable through it | `/v1/reviews`, professor pages | yes |
 | `course_grades` | Grades aggregated per course | `/grades/summary` | yes |
 | `course_term_grades` | Grades per (course, term) | `/grades/summary` | yes |

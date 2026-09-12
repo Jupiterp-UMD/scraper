@@ -15,7 +15,7 @@
 # Values already present in the environment win, so a one-off override still
 # works with the file in place:
 #
-#   DATABASE_DIRECT_URL=postgresql://... ./db/migrate.sh
+#   TARGET_DB_URL=postgresql://... ./db/clone_project.sh --dry-run
 #
 # Handles the `export KEY=value` form, because that is what you get from
 # copying the lines out of the README.

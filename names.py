@@ -4,7 +4,7 @@ spellings mean the same person.
 
 This module is the Python half of a three-way contract. The other two are:
 
-    SQL  normalize_name() / slugify()   db/migrations/0001_extensions_and_name_functions.sql
+    SQL  normalize_name() / slugify()   supabase/migrations/20260912200959_grades_instructors_reviews.sql
     TS   normalizeName() / slugify()    site/src/lib/professor/Names.ts
 
 All three are exercised against `tests/fixtures/names.json`. A drift between

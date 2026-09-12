@@ -3,7 +3,7 @@
     "Shared contract for name normalization and slug generation.",
     "",
     "Three implementations must agree on every case here:",
-    "  SQL     normalize_name() / slugify()  - db/migrations/0001_*.sql",
+    "  SQL     normalize_name() / slugify()  - scraper/supabase/migrations/*_grades_instructors_reviews.sql",
     "  Python  normalize_name() / slugify()  - scraper/names.py",
     "  TS      normalizeName() / slugify()   - site/src/lib/professor/Names.ts",
     "",
