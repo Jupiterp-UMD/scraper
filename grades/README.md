@@ -17,8 +17,10 @@ command below from this `grades/` directory** (`cd grades` first).
 
 ```
 python3 -m pip install -r requirements.txt
-psql "$DATABASE_URL" -f schema.sql        # once
 ```
+
+The tables, views and GPA function come from the database migration in
+`../supabase/migrations/`; see `../db/README.md` for applying it.
 
 `DATABASE_URL` and `DATABASE_KEY` are read from the environment or a `.env`
 file, exactly as in the scraper. The key must be the service role key: the
@@ -126,7 +128,7 @@ The GPA column that appears in the Spring 2021 file only is read and discarded.
 It is not reproducible from the counts in its own file — fitting the weights by
 least squares suggests a denominator of roughly `total` including withdrawals,
 but residuals stay around ±0.05 with outliers past 1.0. GPA is computed instead,
-on the UMD 4.0 scale over letter grades only, by `umd_gpa()` in `schema.sql`.
+on the UMD 4.0 scale over letter grades only, by the database's `umd_gpa()`.
 
 ## What ends up in the database
 
@@ -147,4 +149,3 @@ only, parsing to 210,122 section-level rows.
 | `parse.py` | Format detection and row normalization; no I/O beyond reading its input |
 | `terms.py` | Term codes from messy filenames |
 | `db.py` | Supabase upserts and the ingest log |
-| `schema.sql` | Table, indexes, GPA function, and views |

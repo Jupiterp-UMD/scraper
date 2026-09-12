@@ -700,7 +700,7 @@ def main() -> int:
     print("Done. Every table matches.")
     print()
     print("Next, against the TEST project only:")
-    print("  DATABASE_DIRECT_URL=... ./db/migrate.sh --dry-run")
+    print("  npx supabase db push --db-url \"$DATABASE_DIRECT_URL\" --dry-run")
     print("  python3 scripts/backfill_instructor_ids.py --dry-run")
     return 0
 

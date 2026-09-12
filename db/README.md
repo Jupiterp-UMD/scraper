@@ -1,39 +1,70 @@
 # Jupiterp database migrations
 
-Every schema change to the Jupiterp Supabase project lives here as a numbered
-SQL file. Before this directory existed the schema was applied by hand-running
-`grades/schema.sql` in the SQL editor, which works for one idempotent file and
-stops working the moment a change has to add a column, backfill it, and then
-rewrite the views that read it — in that order, once, in production.
+Schema changes to the Jupiterp Supabase project live in `supabase/migrations/`
+and are applied with the [Supabase CLI](https://supabase.com/docs/guides/cli).
+This directory holds everything around them: the baseline capture, the
+name-parity check, and the scripts that clone production into a test project.
+
+There is one migration, `20260912200959_grades_instructors_reviews.sql`. It is
+everything the grade/PlanetTerp work adds on top of the schema production
+already had, and it replaces `grades/schema.sql` and the numbered
+`db/migrations/0001`–`0036` that `db/migrate.sh` applied during the rehearsal.
+Those files are in git history (last present at `b66e3ca`), along with the
+reasoning behind most of what the migration does.
+
+It is a **delta, not a full schema**. `courses`, `sections`, `departments`,
+`instructors` and `user_data` were created in the Supabase dashboard and appear
+in no migration, so the migration alters them rather than creating them. That
+means `supabase start` and `supabase db reset` cannot build a local database
+from this repository yet. Getting there needs the production baseline (below)
+committed as an earlier migration and marked as applied on production with
+`supabase migration repair`.
 
 ## Applying
 
-Migrations need DDL, which PostgREST does not do, so `supabase-py` cannot apply
-them. Use a direct Postgres connection:
+Run from the repository root. Pushing needs a Postgres connection string, not
+Docker:
 
 ```sh
-export DATABASE_DIRECT_URL='postgresql://postgres:...@db.<ref>.supabase.co:5432/postgres'
-./db/migrate.sh            # apply everything not yet applied
-./db/migrate.sh --dry-run  # list what would be applied, touch nothing
-./db/migrate.sh --to 0003  # stop after 0003
+npx supabase db push --db-url "$DATABASE_DIRECT_URL" --dry-run   # list what would be applied
+npx supabase db push --db-url "$DATABASE_DIRECT_URL"             # apply it
+npx supabase migration list --db-url "$DATABASE_DIRECT_URL"      # local vs. applied
 ```
+
+`npx supabase link --project-ref <ref>` and then `--linked` in place of
+`--db-url` works too, and prompts for the database password.
+
+`db push` runs each migration file, and the row recording it in
+`supabase_migrations.schema_migrations`, in a single transaction. A failure
+anywhere in the file leaves the database exactly as it was.
+
+PostgREST caches the schema. After a push, reload it, or new functions answer
+404 from a route that plainly exists:
+
+```sh
+psql "$DATABASE_DIRECT_URL" -c "notify pgrst, 'reload schema';"
+```
+
+### The connection string
 
 `DATABASE_DIRECT_URL` is the *session* connection string from the Supabase
 dashboard (Settings → Database), not `DATABASE_URL`, which points at the
-PostgREST endpoint the scraper uses.
+PostgREST endpoint the scraper uses. The CLI requires it percent-encoded: a
+password containing `#`, `$`, `&` or `@` has to be escaped in the URL.
 
-Rather than exporting it every time, put it in `db/.env`, which
-`clone_via_api.py`, `clone_project.sh`, and `migrate.sh` all read. See
-`.env.example`. Anything already exported wins over the file, so a one-off
-override against a different project still works:
+It can live in `db/.env` (see `.env.example`). The CLI does not read that file,
+so load it into the shell first:
 
 ```sh
-DATABASE_DIRECT_URL=postgresql://... ./db/migrate.sh --dry-run
+source db/load_env.sh && load_env_file
 ```
 
-Note the variable is `DATABASE_DIRECT_URL`, not `DIRECT_DATABASE_URL`. The
-scripts do not accept the second spelling, and the failure looks like the
-variable was never set at all.
+Anything already exported wins over the file, so a one-off override against a
+different project still works.
+
+Note the variable is `DATABASE_DIRECT_URL`, not `DIRECT_DATABASE_URL`. Nothing
+accepts the second spelling, and the failure looks like the variable was never
+set at all.
 
 ### If the connection times out or reports "network is unreachable"
 
@@ -50,50 +81,48 @@ DATABASE_DIRECT_URL='postgresql://postgres.<ref>:...@aws-0-<region>.pooler.supab
 ```
 
 **Port 5432, not 6543.** The pooler serves session mode on 5432 and
-transaction mode on 6543; transaction mode does not keep a session across
-statements, which is what `migrate.sh` needs to run a file inside one
-transaction. Pointing it at 6543 fails partway through a migration rather
-than refusing up front.
-
-The runner records each applied file in `schema_migrations` and refuses to
-re-apply one whose checksum has changed since. Editing a migration that has
-already run in production is therefore an error, not a silent no-op: write a
-new migration instead.
-
-Each file runs inside a single transaction, so a failure rolls back cleanly and
-leaves `schema_migrations` untouched.
+transaction mode on 6543. A migration is one transaction spanning many
+statements, and transaction mode does not keep a session across them.
 
 ## Rules
 
-1. **Migrations are append-only once applied to production.** The checksum
-   guard exists to enforce this. Fixing a mistake means a new file.
-2. **Migrations are idempotent where it is free** (`if not exists`,
-   `create or replace`) but the runner is what actually guarantees
-   apply-once, so do not rely on idempotency for correctness.
+1. **Migrations are append-only once applied to production.** The CLI records
+   which versions have run, not what they contained, so an edit to an applied
+   file is never run and nothing says so. Fixing a mistake means a new
+   migration.
+2. **Create them with the CLI** — `npx supabase migration new <name>` — so the
+   timestamp prefix sorts after everything already applied.
 3. **Backfills that touch many rows do not go in migrations.** A migration
    holds a transaction open; a backfill over 210k grade rows wants to be
    resumable and interruptible. Those live in `scripts/` and are run
    separately, with the migration adding the (nullable) column and the script
-   filling it. See `0004` and `scripts/backfill_instructor_ids.py`.
-4. **Numbering is sequential, not timestamped.** There is one person applying
-   these; sequential numbers sort correctly everywhere and read better in a
-   review than `20260814093122`.
+   filling it. See `grades.instructor_id` and
+   `scripts/backfill_instructor_ids.py`.
 
 ## Baseline
 
-The tables this project started with — `courses`, `sections`, `departments`,
-`instructors` — and the `active_instructors` view were created through the
-Supabase dashboard and **their definitions exist only in the database.** That
-is a real gap: nothing in version control records what `active_instructors`
-currently selects.
-
-`baseline/capture.sql` dumps the live definitions. Run it once and commit the
-output to `baseline/current_schema.sql` *before applying `0003`*, which
-redefines `active_instructors` — otherwise there is no record of what it
-replaced.
+The dashboard-made tables and the original `active_instructors` materialized
+view are defined **only in the production database**. The migration drops
+`active_instructors`, so capture production's schema before pushing to it —
+otherwise there is no record of what was replaced.
 
 ```sh
-psql "$DATABASE_DIRECT_URL" -Atf db/baseline/capture.sql > db/baseline/current_schema.sql
+psql "$PROD_DIRECT_URL" -Atf db/baseline/capture.sql > db/baseline/prod_schema.sql
+```
+
+`baseline/current_schema.sql` is an earlier, partial capture recovered from the
+rehearsal clone.
+
+## Moving the rehearsal clone onto the CLI
+
+The clone had `0001`–`0036` applied by `migrate.sh`, which is the schema this
+migration produces, recorded in the old `public.schema_migrations` ledger. Mark
+the migration as applied there instead of running it again, then drop the old
+ledger:
+
+```sh
+npx supabase migration repair 20260912200959 --status applied --db-url "$DATABASE_DIRECT_URL"
+psql "$DATABASE_DIRECT_URL" -c "drop table public.schema_migrations;"
 ```
 
 ## Rehearsing against a test project
@@ -156,32 +185,34 @@ undone. Both refuse to run when source and target are the same project, and
 both end by comparing row counts, which is what actually decides whether the
 copy worked.
 
-Worth doing before touching production, because it answers the question nobody
-can estimate in advance. Clone, apply the migrations, then run
-`scripts/backfill_instructor_ids.py --dry-run` against the copy: the match rate
-it prints is what decides how much manual triage the real migration costs.
+A fresh clone of production is pre-migration, so the migration pushes onto it
+exactly as it will onto production. Worth doing before touching production,
+because it answers the question nobody can estimate in advance: clone, push the
+migration, then run `scripts/backfill_instructor_ids.py --dry-run` against the
+copy. The match rate it prints is what decides how much manual triage the real
+migration costs.
 
 The clone also captures `active_instructors`, whose definition currently exists
 only inside the production database.
 
 ## Order of operations for the PlanetTerp migration
 
-The migrations here are only half of each phase; the scripts that fill the new
+The migration is only half of the change; the scripts that fill the new
 columns are the other half. Running them out of order produces a schema that
 looks correct and is empty.
 
 | Step | What | Where |
 | :-- | :-- | :-- |
-| 1 | Capture the baseline | `baseline/capture.sql` |
-| 2 | `0001`–`0002` | extensions, `normalize_name`, instructor identity |
-| 3 | **PlanetTerp snapshot** — unrepeatable, do it early | `scripts/snapshot_planetterp.py` |
-| 4 | `0003` | `section_instructors`, `active_instructors` rework |
-| 5 | **Instructor backfill** from registrar + Testudo names | `scripts/backfill_instructors.py` |
-| 6 | Triage `instructor_match_queue` | admin UI |
-| 7 | `0004`–`0005` | `grades.instructor_id`, matviews |
-| 8 | **Grade instructor backfill**, then refresh matviews | `scripts/backfill_instructor_ids.py` |
-| 9 | `0006` | row-level security |
+| 1 | Capture the production baseline | `baseline/capture.sql` |
+| 2 | Push the migration, then reload PostgREST's schema cache | `supabase db push` |
+| 3 | Name parity: every query returns zero rows | `tests/name_parity.sql` |
+| 4 | Load grade data | `grades/main.py ingest` |
+| 5 | **PlanetTerp snapshot** — cannot be redone | `scripts/snapshot_planetterp.py` |
+| 6 | Testudo section scrape | `main.py --sections` |
+| 7 | Grade instructor backfill, which refreshes the grade matviews | `scripts/backfill_instructor_ids.py` |
+| 8 | Triage `instructor_match_queue` | admin UI |
 
-Step 3 is the one that cannot be redone. PlanetTerp is no longer being updated
+Step 5 is the one that cannot be redone. PlanetTerp is no longer being updated
 and if it goes offline before the snapshot runs, the baseline ratings are gone
-permanently.
+permanently. Until it runs, no professor displays a rating: the migration
+recomputes ratings from PlanetTerp columns that are still empty.

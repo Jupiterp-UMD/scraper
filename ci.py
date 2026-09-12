@@ -152,7 +152,7 @@ def verify_supabase_populated():
     if count < ACTIVE_INSTRUCTORS_FLOOR:
         failures.append(
             f"`active_instructors` has {count} rows, below {ACTIVE_INSTRUCTORS_FLOOR}. "
-            f"Since 0035 this view is `instructors.is_active`, whose only writer "
+            f"This view is `instructors.is_active`, whose only writer "
             f"refuses an empty scrape, so a collapse here usually means "
             f"reconcile_instructors() failed rather than that nobody is teaching."
         )
@@ -202,7 +202,7 @@ def _check_active_flag_matches_section_links(client, failures: list):
     """
     `is_active` and `section_instructors` must still describe the same people.
 
-    0035 made `instructors.is_active` the definition of active, so
+    `instructors.is_active` is the definition of active, so
     `active_instructors` no longer consults `section_instructors` and a
     disagreement between the two stopped being self-correcting. They are
     written by two RPCs - `set_active_instructors` and
@@ -242,7 +242,7 @@ def _check_active_flag_matches_section_links(client, failures: list):
         failures.append(
             f"{drift} instructors differ between `is_active` and "
             f"`section_instructors`, above the ceiling of "
-            f"{ACTIVE_DRIFT_CEILING}. Since 0035 only the flag is read by "
+            f"{ACTIVE_DRIFT_CEILING}. Only the flag is read by "
             f"`/v1/instructors/active`, so this many professors are listed as "
             f"teaching nothing, or teaching while unlisted. Most likely "
             f"reconcile_instructors() failed between swap_section_instructors() "

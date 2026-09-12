@@ -152,7 +152,7 @@ echo "── dumping public schema from $SRC_REF ──"
 
 # --no-owner / --no-privileges: the two projects have different role OIDs and
 #   Supabase manages the roles itself, so carrying ownership across produces
-#   errors for no benefit. Grants are re-applied by migration 0006.
+#   errors for no benefit. Grants are re-applied by the migration.
 # --schema=public: Supabase's auth, storage, realtime and vault schemas are
 #   managed by the platform. Copying them breaks the target.
 # --no-publications / --no-subscriptions: realtime replication artefacts that
@@ -242,8 +242,8 @@ echo
 echo "Done."
 echo
 echo "Next, against the TEST project only:"
-echo "  DATABASE_DIRECT_URL=\"\$TARGET_DB_URL\" ./db/migrate.sh --dry-run"
-echo "  DATABASE_DIRECT_URL=\"\$TARGET_DB_URL\" ./db/migrate.sh"
+echo "  npx supabase db push --db-url \"\$TARGET_DB_URL\" --dry-run"
+echo "  npx supabase db push --db-url \"\$TARGET_DB_URL\""
 echo "  python3 scripts/backfill_instructor_ids.py --dry-run"
 echo
 echo "That last command prints the instructor match rate, which is the number"

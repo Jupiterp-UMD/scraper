@@ -106,7 +106,7 @@ def to_rows(records: list[dict], snapshot_at: str) -> list[dict]:
     Project the API records onto the `pt_*` columns.
 
     Matched to existing instructors by PlanetTerp slug, which is what
-    `instructors.slug` still held before migration 0002 copied it to `pt_slug`.
+    `instructors.slug` held before the migration copied it to `pt_slug`.
     Names are not used for matching here: this runs before instructor identity
     is backfilled, and a name-based match at this point is exactly the
     guesswork the rest of the migration exists to remove.

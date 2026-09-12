@@ -5,7 +5,7 @@
 --   psql "$DATABASE_DIRECT_URL" -Atf db/baseline/capture.sql \
 --        > db/baseline/current_schema.sql
 --
--- Run this BEFORE migration 0003, which replaces `active_instructors`. Its
+-- Run this BEFORE pushing the migration, which replaces `active_instructors`. Its
 -- current definition exists nowhere else: it was written in the dashboard and
 -- never committed, so this is the only chance to record what it used to say.
 
