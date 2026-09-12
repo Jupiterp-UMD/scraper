@@ -1,3 +1,20 @@
 __pycache__
+__pycache__/
 
+# Credentials. Matches at any depth, so db/.env and grades/.env are covered.
 .env
+.env.*
+!.env.example
+
+# Local state and generated artefacts
+.ci-counts.json
+.venv/
+
+# PlanetTerp snapshot archives and database dumps: real data, never committed.
+archive/
+.dumps/
+
+
+grades/data/
+# macOS noise
+.DS_Store
