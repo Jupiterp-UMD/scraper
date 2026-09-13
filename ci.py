@@ -66,6 +66,14 @@ MATCH_QUEUE_CEILING = int(os.environ.get("MATCH_QUEUE_CEILING", "500"))
 # by one until the next run links them to a section.
 ACTIVE_DRIFT_CEILING = int(os.environ.get("ACTIVE_DRIFT_CEILING", "25"))
 
+# Rows requested per page by fetch_all(). PostgREST truncates every response to
+# the project's `max_rows` without saying so, and that is 500 on the hosted
+# project but 1000 in supabase/config.toml. Paging in 1000s and stopping at the
+# first short page therefore read exactly one page in production: 500 of the
+# 8,698 section links, which is how a healthy run reported 2,870 instructors
+# of drift.
+PAGE_SIZE = 500
+
 
 def send_alert(subject: str, detail: str):
     """
@@ -104,6 +112,25 @@ def send_alert(subject: str, detail: str):
 def count_rows(client, table: str) -> int:
     response = client.table(table).select("*", count="exact").limit(1).execute()
     return response.count or 0
+
+
+def fetch_all(query) -> list[dict]:
+    """
+    Every row of a query, one page at a time.
+
+    `query` is a function returning a fresh, fully ordered query builder, since
+    `.range()` modifies the builder it is called on. The order has to be unique:
+    offset paging over ties can repeat some rows and skip others.
+
+    Only an empty page ends the loop. A short page proves nothing, because the
+    server may return fewer rows than were asked for; see PAGE_SIZE.
+    """
+    rows: list[dict] = []
+    while True:
+        page = query().range(len(rows), len(rows) + PAGE_SIZE - 1).execute().data
+        if not page:
+            return rows
+        rows.extend(page)
 
 
 def load_previous() -> dict:
@@ -258,24 +285,14 @@ def _distinct_linked_instructors(client) -> int:
     8,500 rows, so this pages the ids and counts them here rather than adding a
     view for one CI check.
     """
-    seen = set()
-    offset = 0
-    while True:
-        page = (
-            client.table("section_instructors")
-            .select("instructor_id")
-            .order("instructor_id")
-            .range(offset, offset + 999)
-            .execute()
-            .data
-        )
-        if not page:
-            break
-        seen.update(row["instructor_id"] for row in page)
-        offset += len(page)
-        if len(page) < 1000:
-            break
-    return len(seen)
+    rows = fetch_all(
+        lambda: client.table("section_instructors")
+        .select("instructor_id")
+        .order("instructor_id")
+        .order("course_code")
+        .order("sec_code")
+    )
+    return len({row["instructor_id"] for row in rows})
 
 
 def _check_matview_freshness(client, failures: list):
@@ -328,55 +345,34 @@ def _check_every_professor_is_linkable(client, failures: list):
     nothing *and* is not queued has no explanation, and that is the failure.
     """
     unresolved = {}
-    offset = 0
-    while True:
-        page = (
-            client.table("sections_with_instructors")
-            .select("course_code, sec_code, instructors, instructor_slugs")
-            .order("course_code")
-            .order("sec_code")
-            .range(offset, offset + 999)
-            .execute()
-            .data
-        )
-        if not page:
-            break
-        for row in page:
-            names = row.get("instructors") or []
-            slugs = row.get("instructor_slugs") or []
-            for index, name in enumerate(names):
-                cleaned = (name or "").strip()
-                if not cleaned or is_denylisted(cleaned):
-                    continue
-                slug = slugs[index] if index < len(slugs) else None
-                if not slug:
-                    unresolved.setdefault(cleaned, f"{row['course_code']} {row['sec_code']}")
-        offset += len(page)
-        if len(page) < 1000:
-            break
+    sections = fetch_all(
+        lambda: client.table("sections_with_instructors")
+        .select("course_code, sec_code, instructors, instructor_slugs")
+        .order("course_code")
+        .order("sec_code")
+    )
+    for row in sections:
+        names = row.get("instructors") or []
+        slugs = row.get("instructor_slugs") or []
+        for index, name in enumerate(names):
+            cleaned = (name or "").strip()
+            if not cleaned or is_denylisted(cleaned):
+                continue
+            slug = slugs[index] if index < len(slugs) else None
+            if not slug:
+                unresolved.setdefault(cleaned, f"{row['course_code']} {row['sec_code']}")
 
     if not unresolved:
         print("professor links: every scheduled instructor resolves to a page")
         return
 
-    queued = set()
-    offset = 0
-    while True:
-        page = (
-            client.table("instructor_match_queue")
-            .select("observed")
-            .is_("resolved_at", "null")
-            .order("id")
-            .range(offset, offset + 999)
-            .execute()
-            .data
-        )
-        if not page:
-            break
-        queued.update((r.get("observed") or "").strip() for r in page)
-        offset += len(page)
-        if len(page) < 1000:
-            break
+    queue = fetch_all(
+        lambda: client.table("instructor_match_queue")
+        .select("observed")
+        .is_("resolved_at", "null")
+        .order("id")
+    )
+    queued = {(r.get("observed") or "").strip() for r in queue}
 
     awaiting = sorted(n for n in unresolved if n in queued)
     unexplained = sorted(n for n in unresolved if n not in queued)

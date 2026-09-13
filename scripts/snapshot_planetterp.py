@@ -4,6 +4,7 @@ One-time capture of PlanetTerp's instructor ratings.
 
     python3 scripts/snapshot_planetterp.py --archive ./archive
     python3 scripts/snapshot_planetterp.py --archive ./archive --print-output
+    python3 scripts/snapshot_planetterp.py --from-archive ./archive/planetterp-professors-<stamp>.json
 
 THIS CANNOT BE REDONE. PlanetTerp is no longer being actively updated, and if
 it goes offline before this runs, Jupiterp has no baseline ratings at all and
@@ -30,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import sleep
 
+import httpx
 import requests
 from dotenv import load_dotenv
 
@@ -45,6 +47,13 @@ PAGE_SIZE = 100
 REQUEST_DELAY_SEC = 0.5
 
 CHUNK_SIZE = 200
+
+ARCHIVE_STAMP = "%Y%m%dT%H%M%SZ"
+
+# Supabase's edge ends an HTTP/2 connection after 10,000 requests, and the
+# client does not reconnect on its own. The updates are idempotent, so a
+# dropped connection is retried on a fresh client.
+MAX_ATTEMPTS = 3
 
 
 def fetch_all(verbose: bool = True) -> list[dict]:
@@ -95,10 +104,28 @@ def archive_raw(records: list[dict], archive_dir: Path) -> Path:
     only thing that can answer a question we have not thought of yet.
     """
     archive_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime(ARCHIVE_STAMP)
     path = archive_dir / f"planetterp-professors-{stamp}.json"
     path.write_text(json.dumps(records, indent=2, ensure_ascii=False))
     return path
+
+
+def load_archive(path: Path) -> tuple[list[dict], str]:
+    """
+    Read an archive written by `archive_raw`, returning its records and when
+    they were captured.
+
+    The capture time comes from the filename stamp, so `pt_snapshot_at` records
+    when PlanetTerp said this rather than when it was loaded. Falls back to the
+    file's modification time for a renamed file.
+    """
+    records = json.loads(path.read_text())
+    try:
+        captured = datetime.strptime(path.stem.rsplit("-", 1)[-1], ARCHIVE_STAMP)
+        captured = captured.replace(tzinfo=timezone.utc)
+    except ValueError:
+        captured = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    return records, captured.isoformat()
 
 
 def to_rows(records: list[dict], snapshot_at: str) -> list[dict]:
@@ -146,7 +173,7 @@ def to_rows(records: list[dict], snapshot_at: str) -> list[dict]:
     return rows
 
 
-def apply_rows(client, rows: list[dict], verbose: bool = True) -> tuple[int, int]:
+def apply_rows(connect, rows: list[dict], verbose: bool = True) -> tuple[int, int]:
     """
     Write the snapshot onto existing instructor rows, matched on `pt_slug`.
 
@@ -156,23 +183,38 @@ def apply_rows(client, rows: list[dict], verbose: bool = True) -> tuple[int, int
     PlanetTerp rows would reintroduce exactly the identity problem this
     migration is removing. Their ratings are still preserved in the archive
     file if they later turn out to matter.
+
+    `connect` returns a new client. It is called again whenever the connection
+    drops, which it does after 10,000 requests; see MAX_ATTEMPTS.
     """
     updated = 0
     missing = 0
+    client = connect()
 
-    for row in rows:
-        response = (
-            client.table("instructors")
-            .update(
-                {
-                    "pt_average_rating": row["pt_average_rating"],
-                    "pt_review_count": row["pt_review_count"],
-                    "pt_snapshot_at": row["pt_snapshot_at"],
-                }
-            )
-            .eq("pt_slug", row["pt_slug"])
-            .execute()
-        )
+    for index, row in enumerate(rows):
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                response = (
+                    client.table("instructors")
+                    .update(
+                        {
+                            "pt_average_rating": row["pt_average_rating"],
+                            "pt_review_count": row["pt_review_count"],
+                            "pt_snapshot_at": row["pt_snapshot_at"],
+                        }
+                    )
+                    .eq("pt_slug", row["pt_slug"])
+                    .execute()
+                )
+                break
+            except httpx.TransportError as err:
+                if attempt == MAX_ATTEMPTS:
+                    raise
+                if verbose:
+                    print(f"  connection lost at row {index} ({err!r}); reconnecting")
+                sleep(attempt)
+                client = connect()
+
         if response.data:
             updated += 1
         else:
@@ -195,21 +237,32 @@ def main() -> None:
         action="store_true",
         help="Fetch and archive, but do not write to the database",
     )
+    parser.add_argument(
+        "--from-archive",
+        type=Path,
+        metavar="FILE",
+        help="Load a previous archive instead of fetching PlanetTerp again",
+    )
     args = parser.parse_args()
 
     load_dotenv()
 
-    records = fetch_all()
-    print(f"Fetched {len(records)} professor records.")
+    if args.from_archive:
+        records, snapshot_at = load_archive(args.from_archive)
+        print(f"Loaded {len(records)} professor records captured {snapshot_at}.")
+    else:
+        records = fetch_all()
+        print(f"Fetched {len(records)} professor records.")
 
     if not records:
         raise SystemExit("PlanetTerp returned nothing. Refusing to write an empty snapshot.")
 
-    archive_path = archive_raw(records, Path(args.archive))
-    print(f"Archived raw response to {archive_path}")
-    print("Copy this file somewhere durable before continuing. It cannot be regenerated.")
+    if not args.from_archive:
+        archive_path = archive_raw(records, Path(args.archive))
+        print(f"Archived raw response to {archive_path}")
+        print("Copy this file somewhere durable before continuing. It cannot be regenerated.")
+        snapshot_at = datetime.now(timezone.utc).isoformat()
 
-    snapshot_at = datetime.now(timezone.utc).isoformat()
     rows = to_rows(records, snapshot_at)
     print(f"{len(rows)} usable records after dropping duplicates and placeholders.")
 
@@ -224,7 +277,7 @@ def main() -> None:
 
     from db import get_supabase_client
 
-    apply_rows(get_supabase_client(), rows)
+    apply_rows(get_supabase_client, rows)
 
 
 if __name__ == "__main__":
