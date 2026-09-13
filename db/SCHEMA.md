@@ -67,6 +67,12 @@ professor page slug for slot *i* of `instructors`, `NULL` where unresolved.
 > of leaving `NULL` shifts every later slug onto the wrong professor. The
 > column is maintained only by `refresh_section_instructor_slugs()`.
 
+The migration adds the column but does not populate it: it resolves through
+`instructor_aliases`, which is created empty and filled at runtime, so there is
+nothing to resolve until the first scrape reconciles. Every slug reading `NULL`
+straight after a migration is expected — professors render unlinked, and the
+next sections run fills them in.
+
 | | |
 | :-- | :-- |
 | Written by | `scraper/sections.py` (snapshot); `refresh_section_instructor_slugs()` for the slug column |

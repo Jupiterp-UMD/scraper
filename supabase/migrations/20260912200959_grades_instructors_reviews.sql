@@ -21,6 +21,26 @@
 -- scripts. See db/README.md for the order.
 
 
+/* =========================== session settings =========================== */
+
+-- A DDL migration must not run under the role's `statement_timeout`. Without
+-- this the whole file inherits whatever limit the connecting role carries, and
+-- any single statement that runs long is cancelled with 57014 -- rolling back
+-- the entire migration, because push runs it as one transaction. That is how
+-- `select refresh_section_instructor_slugs()` (removed at the foot of this
+-- file) took the whole migration down.
+--
+-- `20260912200000_prod_baseline.sql` sets the same three; a schema dump emits
+-- them for exactly this reason. Plain `set`, not `set local`, to match it and
+-- because `set local` outside a transaction block is a warning and a no-op --
+-- these must hold whether the file is applied by push or by psql. They last
+-- only for the connection applying the migration; no role default changes, so
+-- the timeouts the application runs under are untouched.
+set statement_timeout = 0;
+set lock_timeout = 0;
+set idle_in_transaction_session_timeout = 0;
+
+
 /* ============================== extensions ============================== */
 
 create extension if not exists unaccent;
@@ -2940,7 +2960,33 @@ begin
 end $$;
 
 
--- Bring the derived columns in line with the rows above. Both run again after
--- the scrape and the PlanetTerp snapshot; until then ratings read as none.
-select refresh_section_instructor_slugs();
+-- Bring the derived ratings in line with the rows above. Runs again after the
+-- PlanetTerp snapshot; until then ratings read as none.
 select refresh_instructor_ratings();
+
+
+-- `sections.instructor_slugs` is deliberately NOT refreshed here. This is the
+-- statement that timed out and rolled back the first attempt at this migration
+-- (57014, at `select refresh_section_instructor_slugs()`), and it could only
+-- ever have been a no-op.
+--
+-- The column resolves through `instructor_aliases`, which this file creates
+-- empty and never backfills: every alias row is written at runtime by
+-- link_instructor(). So here every lookup misses, and the call can only write
+-- an array of NULLs into all ~8,500 sections -- which is what the `add column`
+-- above already left behind.
+--
+-- The same emptiness is what makes it slow. With no rows and no statistics on
+-- `instructor_aliases`, the planner estimates it at the default 560 rows,
+-- costs the correlated subquery as though it runs once, and picks a Seq Scan
+-- of `instructors` over the `instructors_id_key` lookup. The subquery then
+-- runs once per section for the SET and again for the IS DISTINCT FROM guard:
+-- 15,000 instructors x 8,500 sections x 2 is ~244M rows scanned, against a
+-- statement_timeout it cannot possibly meet. Populated, the same function
+-- plans as index lookups and takes ~200ms -- there is nothing to fix in it.
+--
+-- The scrape calls it once reconciliation has actually resolved the names
+-- (instructor_registry.py), which is the first moment it has anything to
+-- resolve and the first moment the plan is sane. Until that run lands, a NULL
+-- column renders professors unlinked -- the same degraded state the function's
+-- own header describes for a scrape that fails before reaching it.
