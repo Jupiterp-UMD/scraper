@@ -5,12 +5,13 @@ and are applied with the [Supabase CLI](https://supabase.com/docs/guides/cli).
 This directory holds everything around them: the baseline capture, the
 name-parity check, and the scripts that clone production into a test project.
 
-There are two migrations:
+There are three migrations:
 
 | File | What |
 | :-- | :-- |
 | `20260912200000_prod_baseline.sql` | Production's schema before the grade work: the dashboard-made `courses`, `sections`, `departments`, `instructors`, `user_data`, `dept_codes`, and the old `active_instructors` matview. Dumped with `supabase db dump --linked`. |
 | `20260912200959_grades_instructors_reviews.sql` | Everything the grade/PlanetTerp work adds. Replaces `grades/schema.sql` and the numbered `db/migrations/0001`–`0036` that `db/migrate.sh` applied during the rehearsal; those are in git history (last present at `b66e3ca`), with the reasoning behind most of it. |
+| `20260913020439_swap_section_instructors_safeupdate.sql` | Adds `where true` to the `delete` in `swap_section_instructors()`, which `pg_safeupdate` rejected on every scheduled sections run. See rule 4. |
 
 Together they build the whole schema from an empty database. Production already
 has everything in the baseline, so there it is **marked as applied, never run**.
@@ -106,6 +107,13 @@ statements, and transaction mode does not keep a session across them.
    separately, with the migration adding the (nullable) column and the script
    filling it. See `grades.instructor_id` and
    `scripts/backfill_instructor_ids.py`.
+4. **Every `DELETE` and `UPDATE` in a function needs a `WHERE` clause** —
+   `where true` when every row is meant. Supabase loads `pg_safeupdate` into
+   PostgREST sessions, and it rejects them otherwise with `21000: DELETE
+   requires a WHERE clause`, inside functions too. psql and `db push` connect
+   without the extension, so the migration applies cleanly and the function
+   fails only when the scraper calls it. `tests/test_migrations_safeupdate.py`
+   checks every function body.
 
 ## Baseline
 
