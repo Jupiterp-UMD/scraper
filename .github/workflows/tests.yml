@@ -33,5 +33,8 @@ jobs:
             -   name: Unit tests
                 run: python3 -m pytest tests/ -q
 
+            # The site's copy of the fixture is on its grade-migration branch
+            # and has not reached its main yet. The script tries the fallback
+            # only after main, so this line has no effect once the site merges.
             -   name: Name fixtures agree with the site repository
-                run: python3 scripts/check_fixture_parity.py --url
+                run: python3 scripts/check_fixture_parity.py --url --fallback-ref chase-fournier/grade-migration
