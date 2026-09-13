@@ -21,6 +21,7 @@ outputs.
     python3 scripts/check_fixture_parity.py path/to/names.json # explicit path
     python3 scripts/check_fixture_parity.py --url              # fetch from GitHub (CI)
     python3 scripts/check_fixture_parity.py --url --ref main   # fetch a named ref
+    python3 scripts/check_fixture_parity.py --url --fallback-ref some-branch  # try after main
 
 Exits non-zero and prints the differing cases when the two have drifted.
 """
@@ -107,7 +108,7 @@ def describe_drift(canonical: dict, other: dict) -> list[str]:
     return problems
 
 
-def candidate_refs(explicit: str | None) -> list[str]:
+def candidate_refs(explicit: str | None, fallbacks: list[str] | None = None) -> list[str]:
     """
     Refs to look for the site's copy on, in the order to try them.
 
@@ -123,6 +124,14 @@ def candidate_refs(explicit: str | None) -> list[str]:
     is open, and `main` is right once it has merged and the branch is gone.
     Trying the branch first and falling back to `main` is correct in both
     states without anyone having to remember to flip it back.
+
+    The matching name is a convention, not a guarantee. The fixture first
+    reached the site on `chase-fournier/grade-migration` while this repository
+    carried the same work on `Supabase-Changes` and `Migration-Fixes` and then
+    merged it, so neither the branch under test nor the site's `main` had a
+    copy. `fallbacks` names site branches to try after `main`. Tried last, a
+    fallback matters only while the site's `main` has no copy of the fixture,
+    and once it does, a leftover fallback has no effect.
     """
     if explicit:
         return [explicit]
@@ -157,9 +166,10 @@ def candidate_refs(explicit: str | None) -> list[str]:
         except (OSError, subprocess.SubprocessError):
             pass
 
-    # Always last, and always the end of the line: once the branch under test
-    # is `main` there is nothing further to fall back to.
+    # After the branch under test, and ahead of any fallback: once the site's
+    # `main` carries the fixture, it is the copy to compare against.
     refs.append("main")
+    refs.extend(ref.strip() for ref in fallbacks or [] if ref.strip())
 
     seen: set[str] = set()
     return [ref for ref in refs if not (ref in seen or seen.add(ref))]
@@ -197,12 +207,20 @@ def main() -> int:
         help="branch or tag to fetch the site's copy from; defaults to the "
         "branch under test, then main",
     )
+    parser.add_argument(
+        "--fallback-ref",
+        action="append",
+        default=[],
+        metavar="REF",
+        help="site branch to try after main, for when the site's copy has not "
+        "reached main yet; may be repeated; ignored with --ref",
+    )
     args = parser.parse_args()
 
     canonical = load(str(CANONICAL))
 
     if args.url:
-        refs = candidate_refs(args.ref)
+        refs = candidate_refs(args.ref, args.fallback_ref)
         try:
             other, source = fetch_site_copy(refs)
         except LookupError as error:
@@ -210,7 +228,8 @@ def main() -> int:
                 f"None of these refs of the site repository have a copy of "
                 f"the fixture: {error}.\n"
                 "The site keeps it at "
-                f"{SITE_RELATIVE}; pass --ref to name the branch it is on.",
+                f"{SITE_RELATIVE}; pass --ref to name the branch it is on, or "
+                "--fallback-ref if it has not reached main yet.",
                 file=sys.stderr,
             )
             return 2

@@ -21,6 +21,7 @@ reporting how much ended up in the human queue.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Iterable
 
 from names import is_denylisted, normalize_name
@@ -31,6 +32,29 @@ if TYPE_CHECKING:  # pragma: no cover
 # PostgREST rejects very large request bodies, and a smaller batch makes a
 # failed request identifiable rather than "something in these 4000 rows".
 CHUNK_SIZE = 500
+
+# Names per link_instructors_bulk() call. The size the grade backfill runs at in
+# production (scripts/backfill_instructor_ids.py), where it was chosen so a
+# batch of mostly unfamiliar names finishes inside the API role's statement
+# timeout. A scrape's names are nearly all exact alias hits, so it has headroom.
+LINK_BATCH = 250
+
+# A batch the gateway fails, rather than the database, is retried.
+#
+# A 504 does not prove the batch never ran: the gateway can give up while the
+# database is still working. A retry that raced that attempt could miss a
+# brand-new professor exactly as the first attempt did and create them a second
+# time - the duplicate instructor this module exists to prevent. So the delay
+# outlasts the API role's statement timeout (about 8s on this project), by which
+# point the first attempt has committed or been cancelled, and a retry after a
+# commit sees its aliases as exact hits.
+LINK_ATTEMPTS = 3
+LINK_RETRY_DELAY_SEC = 15
+
+# PostgREST's own connection failures: cannot reach the database, lost the
+# connection, cannot build the schema cache, or timed out waiting for a pooled
+# connection. None of them means the request itself was at fault.
+POSTGREST_CONNECTION_CODES = frozenset({"PGRST000", "PGRST001", "PGRST002", "PGRST003"})
 
 # Source label recorded on aliases and queue entries. Constrained by a check
 # constraint on `source`, so a typo here fails loudly rather than silently
@@ -137,26 +161,29 @@ def reconcile_instructors(
     # Resolve every distinct name. `link_instructor` writes the alias on a
     # confident match, creates the instructor when nothing at all was similar,
     # and queues anything ambiguous. It returns null in that last case.
+    #
+    # Batched through `link_instructors_bulk`, which calls it once per name
+    # server-side. This used to be one request per name: ~3,000 round trips a
+    # run, where a single gateway 504 on any of them ended the run after
+    # `sections` had already been replaced, so every professor rendered
+    # unlinked until the next run succeeded. That happened on 2026-09-13,
+    # minutes after an identical run went through.
     resolved: dict[str, int] = {}
     known_before = _instructor_count(client)
 
-    for normalized, raw in names.items():
-        instructor_id = client.rpc(
-            "link_instructor",
-            {
-                "observed": raw,
-                "source": SOURCE_TESTUDO,
-                "context": {"term": term} if term is not None else None,
-                "create_if_missing": True,
-                "seen_term": term,
-            },
-        ).execute().data
-
-        if instructor_id is None:
-            report.queued += 1
-        else:
-            resolved[normalized] = instructor_id
-            report.resolved += 1
+    context = {"term": term} if term is not None else None
+    items = list(names.items())
+    for start in range(0, len(items), LINK_BATCH):
+        batch = [
+            {"name_norm": normalized, "observed": raw, "context": context, "seen_term": term}
+            for normalized, raw in items[start : start + LINK_BATCH]
+        ]
+        for entry in _link_batch(client, batch):
+            if entry["instructor_id"] is None:
+                report.queued += 1
+            else:
+                resolved[entry["name_norm"]] = entry["instructor_id"]
+                report.resolved += 1
 
     report.created = max(0, _instructor_count(client) - known_before)
     report.resolved -= report.created
@@ -185,6 +212,59 @@ def reconcile_instructors(
 def _instructor_count(client: "Client") -> int:
     response = client.table("instructors").select("id", count="exact").limit(1).execute()
     return response.count or 0
+
+
+def _link_batch(client: "Client", batch: list[dict]) -> list[dict]:
+    """
+    One `link_instructors_bulk` call, retried if it failed on the way to the
+    database rather than in it.
+
+    An error the database raised - a statement timeout, a constraint - would
+    fail identically on a retry and is raised at once. Retrying is otherwise
+    safe because a batch is one statement: it either committed, and every name
+    in it now comes back as an exact alias hit, or it rolled back entirely. See
+    LINK_RETRY_DELAY_SEC for why the wait is as long as it is.
+    """
+    attempt = 1
+    while True:
+        try:
+            return (
+                client.rpc(
+                    "link_instructors_bulk",
+                    {"batch": batch, "p_source": SOURCE_TESTUDO, "p_create_if_missing": True},
+                )
+                .execute()
+                .data
+                or []
+            )
+        except Exception as error:  # noqa: BLE001 - anything not transient is re-raised
+            if attempt >= LINK_ATTEMPTS or not _is_transient(error):
+                raise
+            print(
+                f"WARNING: link_instructors_bulk failed in transit (attempt {attempt} of "
+                f"{LINK_ATTEMPTS}): {error}. Retrying in {LINK_RETRY_DELAY_SEC}s."
+            )
+            time.sleep(LINK_RETRY_DELAY_SEC)
+            attempt += 1
+
+
+def _is_transient(error: Exception) -> bool:
+    """
+    Whether `error` came from the path to the database rather than from it.
+
+    A gateway failure has no PostgREST JSON body, so the client substitutes the
+    HTTP status for the error code - the integer 504 in the run that prompted
+    this. A database error always carries a string SQLSTATE such as '57014'.
+    """
+    import httpx
+    from postgrest.exceptions import APIError
+
+    if isinstance(error, httpx.TransportError):
+        return True
+    if isinstance(error, APIError):
+        code = str(error.code)
+        return code in {"502", "503", "504"} or code in POSTGREST_CONNECTION_CODES
+    return False
 
 
 def _rebuild_section_instructors(
