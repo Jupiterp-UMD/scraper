@@ -43,7 +43,15 @@ from instructor_registry import SOURCE_REGISTRAR  # noqa: E402
 # source of truth for the scraper and are checked against the SQL ones by
 # db/tests/name_parity.sql.
 
-PAGE_SIZE = 1000
+# Names requested per unlinked_instructor_names() page.
+#
+# PostgREST truncates every response to the project's `max_rows` without saying
+# so, and that is 500 on the hosted project but 1000 in supabase/config.toml.
+# Asking for 1000 and stopping at the first short page therefore read exactly
+# one page in production: 500 of the ~28,000 unlinked names, all of them in the
+# A's, after which the run reported a match rate over a sample it had chosen
+# alphabetically. See the identical note on fetch_all() in ci.py.
+PAGE_SIZE = 500
 
 # Names per link_instructors_bulk() call. Sized against the statement timeout
 # rather than against memory: each name costs a resolve_instructor(), so a
@@ -65,9 +73,14 @@ def distinct_instructor_names(client) -> dict[str, dict]:
 
     The aggregation happens in the database (`unlinked_instructor_names`)
     rather than by paging 200k rows into Python to deduplicate them here. Still
-    paged, because PostgREST caps a response at 1,000 rows and silently
-    truncates past it, which would look like a suspiciously good match rate
+    paged, because PostgREST caps a response at the project's `max_rows` and
+    silently truncates past it, which looks like a suspiciously good match rate
     rather than an error.
+
+    Only an empty page ends the loop. A short page proves nothing, because the
+    server may return fewer rows than were asked for; see PAGE_SIZE. The RPC
+    orders by `name_norm`, which is unique per group, so offset paging over it
+    neither repeats nor skips.
 
     `variants` carries every raw spelling that normalizes to the same name.
     "Jonathan K. Lazar" and "Jonathan K Lazar" are one person written two ways,
@@ -104,8 +117,6 @@ def distinct_instructor_names(client) -> dict[str, dict]:
 
         offset += len(page)
         print(f"  {len(names)} distinct names so far")
-        if len(page) < PAGE_SIZE:
-            break
 
     return names
 

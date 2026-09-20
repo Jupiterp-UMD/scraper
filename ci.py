@@ -54,10 +54,51 @@ NON_DECREASING = {
 # teach in the summer - so it gets a floor rather than a non-decrease check.
 ACTIVE_INSTRUCTORS_FLOOR = 1000
 
-# An unresolved queue this large means name parsing has broken, not that a few
-# genuinely ambiguous professors turned up. Tune once the first backfill has
-# shown what normal looks like.
-MATCH_QUEUE_CEILING = int(os.environ.get("MATCH_QUEUE_CEILING", "500"))
+# Unresolved queue entries, per the source that queued them. One table, two
+# unrelated signals:
+#
+#   testudo   - names from the nightly scrape. A spike means name parsing has
+#               broken, most likely a Testudo markup change, and professor
+#               pages start silently missing grade data. Live, and urgent.
+#   registrar - what the grade backfill could not confidently match across
+#               sixteen years of exports. A standing backlog that only a human
+#               working /admin/professors reduces; it does not move on a scrape
+#               and a high value is not news.
+#
+# Split because one number cannot watch both. The first full backfill left 1,167
+# registrar entries against 47 from Testudo, so a single ceiling set high enough
+# to pass would have sat above any plausible Testudo break - the exact failure
+# it exists to catch - while a ceiling set to catch that break would fail every
+# run until the backlog was triaged by hand.
+MATCH_QUEUE_CEILINGS = {
+    "testudo": int(os.environ.get("MATCH_QUEUE_CEILING", "500")),
+    "registrar": int(os.environ.get("REGISTRAR_QUEUE_CEILING", "2000")),
+}
+
+# Smallest share of `grades` that may carry an instructor_id.
+#
+# Ingesting a grade file and linking its names to instructors are separate
+# steps, and only the first one moves a row count. Every check above passed for
+# a database in which 97% of grade rows had a null instructor_id: `grades` was
+# over its floor, the matviews had been refreshed, and `instructor_grades`
+# covered 440 of 14,261 instructors - so nearly every professor page served an
+# empty grade section while CI reported success.
+#
+# The cause was scripts/backfill_instructor_ids.py paging in 1000s against a
+# 500-row `max_rows` and stopping at the first short page, so it linked 500
+# names, all of them alphabetically in the A's, and reported a match rate over
+# that sample. Same truncation bug as PAGE_SIZE above, one file over.
+#
+# A fraction rather than a row count because `grades` grows every term. Low
+# enough that the names still waiting in the triage queue cannot trip it, high
+# enough that a backfill which silently processed a fraction of the table
+# cannot pass.
+GRADE_LINK_FLOOR = float(os.environ.get("GRADE_LINK_FLOOR", "0.80"))
+
+# How far the linked share may fall below the previous run before it is a
+# failure rather than ordinary churn. A term's new grade file lands unlinked and
+# is linked afterwards, so this legitimately dips between the two.
+GRADE_LINK_DECREASE = float(os.environ.get("GRADE_LINK_DECREASE", "0.05"))
 
 # How far `is_active` and `section_instructors` may disagree before it is a
 # failure rather than a triage entry waiting for the next scrape. Small and
@@ -188,25 +229,8 @@ def verify_supabase_populated():
             f"reconcile_instructors() failed rather than that nobody is teaching."
         )
 
-    queued = (
-        client.table("instructor_match_queue")
-        .select("id", count="exact")
-        .is_("resolved_at", "null")
-        .limit(1)
-        .execute()
-        .count
-        or 0
-    )
-    current["instructor_match_queue_open"] = queued
-    print(f"instructor_match_queue: {queued} unresolved (ceiling {MATCH_QUEUE_CEILING})")
-    if queued > MATCH_QUEUE_CEILING:
-        failures.append(
-            f"`instructor_match_queue` has {queued} unresolved entries, above "
-            f"{MATCH_QUEUE_CEILING}. A spike here means instructor names stopped "
-            f"parsing - most likely a Testudo markup change. Professor pages will "
-            f"be silently missing grade data until it is fixed."
-        )
-
+    _check_match_queue(client, current, failures)
+    _check_grades_are_linked(client, previous, current, failures)
     _check_matview_freshness(client, failures)
     _check_every_professor_is_linkable(client, failures)
     _check_active_flag_matches_section_links(client, failures)
@@ -297,6 +321,116 @@ def _distinct_linked_instructors(client) -> int:
         .order("sec_code")
     )
     return len({row["instructor_id"] for row in rows})
+
+
+def _open_queue_count(client, source: str | None = None) -> int:
+    query = (
+        client.table("instructor_match_queue")
+        .select("id", count="exact")
+        .is_("resolved_at", "null")
+    )
+    if source is not None:
+        query = query.eq("source", source)
+    return query.limit(1).execute().count or 0
+
+
+def _check_match_queue(client, current: dict, failures: list):
+    """
+    Names the resolver refused to guess at, held to a ceiling per source.
+
+    See MATCH_QUEUE_CEILINGS for why this is per source and not one number. The
+    total is still printed and recorded, because it is what the triage screen
+    shows and what anyone reading a run asks for first.
+    """
+    total = _open_queue_count(client)
+    current["instructor_match_queue_open"] = total
+
+    by_source = {source: _open_queue_count(client, source) for source in MATCH_QUEUE_CEILINGS}
+    current["instructor_match_queue_open_by_source"] = by_source
+
+    detail = ", ".join(
+        f"{source} {count}/{MATCH_QUEUE_CEILINGS[source]}" for source, count in by_source.items()
+    )
+    print(f"instructor_match_queue: {total} unresolved ({detail})")
+
+    for source, count in by_source.items():
+        ceiling = MATCH_QUEUE_CEILINGS[source]
+        if count <= ceiling:
+            continue
+        if source == "testudo":
+            failures.append(
+                f"`instructor_match_queue` has {count} unresolved `testudo` entries, "
+                f"above {ceiling}. A spike here means instructor names stopped "
+                f"parsing - most likely a Testudo markup change. Professor pages will "
+                f"be silently missing grade data until it is fixed."
+            )
+        else:
+            failures.append(
+                f"`instructor_match_queue` has {count} unresolved `{source}` entries, "
+                f"above {ceiling}. This backlog only grows when a grade backfill "
+                f"cannot match what it ingested, so either a new export arrived in an "
+                f"unexpected name format or nobody has worked /admin/professors in a "
+                f"long time."
+            )
+
+
+def _check_grades_are_linked(client, previous: dict, current: dict, failures: list):
+    """
+    Grade rows have to reach a professor page, not merely exist.
+
+    `grades.instructor_name` is what the registrar wrote; `grades.instructor_id`
+    is what `instructor_grades` and `course_instructor_grades` group by. A row
+    with a name and no id counts toward every row-count check in this file and
+    appears on no professor page at all.
+
+    Checked two ways, for the same reason the table counts above are: a floor
+    catches a backfill that never really ran, and a non-decrease catches one
+    that quietly gave back ground a later run had won.
+    """
+    total = count_rows(client, "grades")
+    if total == 0:
+        # The `grades` floor above owns this case; a ratio of nothing is not a
+        # second, more confusing way to report it.
+        return
+
+    linked = (
+        client.table("grades")
+        .select("instructor_id", count="exact")
+        .not_.is_("instructor_id", "null")
+        .limit(1)
+        .execute()
+        .count
+        or 0
+    )
+    share = linked / total
+    current["grades_linked"] = linked
+    current["grades_linked_share"] = round(share, 4)
+
+    covered = count_rows(client, "instructor_grades")
+    print(
+        f"grades linked to an instructor: {linked}/{total} ({share:.1%}, floor "
+        f"{GRADE_LINK_FLOOR:.0%}); {covered} instructors have grade data"
+    )
+
+    if share < GRADE_LINK_FLOOR:
+        failures.append(
+            f"only {linked} of {total} grade rows ({share:.1%}) carry an "
+            f"instructor_id, below the floor of {GRADE_LINK_FLOOR:.0%}. Those "
+            f"rows count toward every row-count check here and reach no "
+            f"professor page: `instructor_grades` covers {covered} instructors. "
+            f"Run scripts/backfill_instructor_ids.py, and read the match rate it "
+            f"prints rather than trusting that it finished."
+        )
+        return
+
+    before = previous.get("grades_linked_share")
+    if before is not None and share < before - GRADE_LINK_DECREASE:
+        failures.append(
+            f"the share of grade rows carrying an instructor_id fell from "
+            f"{before:.1%} to {share:.1%}, more than the {GRADE_LINK_DECREASE:.0%} "
+            f"a new term's unlinked grade file explains. Either an ingest landed "
+            f"without a backfill after it, or instructor ids were cleared."
+        )
 
 
 def _check_matview_freshness(client, failures: list):
