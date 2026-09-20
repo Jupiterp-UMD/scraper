@@ -23,7 +23,7 @@ ones.
 """
 
 from db import get_supabase_client
-from names import is_denylisted
+from names import is_denylisted, normalize_name
 import json
 import os
 from pathlib import Path
@@ -75,10 +75,14 @@ ACTIVE_DRIFT_CEILING = int(os.environ.get("ACTIVE_DRIFT_CEILING", "25"))
 PAGE_SIZE = 500
 
 
+# Who gets tagged and assigned when a check fails. Should be modified with a
+# rotation if more people join.
+ALERT_HANDLE = os.environ.get("ALERT_HANDLE", "chase-fournier")
+
+
 def send_alert(subject: str, detail: str):
     """
-    Sends an alert by opening a GitHub issue and tagging Andrew (@atcupps).
-    This should be modified with a rotation if more people join.
+    Sends an alert by opening a GitHub issue and tagging ALERT_HANDLE.
     """
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
@@ -86,8 +90,8 @@ def send_alert(subject: str, detail: str):
         exit(1)
     repo = "jupiterp-umd/scraper"
     title = f"Scraper CI: {subject}"
-    body = f"@atcupps {detail}"
-    assignees = ["atcupps"]
+    body = f"@{ALERT_HANDLE} {detail}"
+    assignees = [ALERT_HANDLE]
 
     url = f"https://api.github.com/repos/{repo}/issues"
 
@@ -366,16 +370,24 @@ def _check_every_professor_is_linkable(client, failures: list):
         print("professor links: every scheduled instructor resolves to a page")
         return
 
+    # Matched on the normalized name, never on the raw spelling. The queue is
+    # keyed by `observed_norm` - one open entry per normalized name per source -
+    # so the raw `observed` it stores is whichever spelling was seen first and
+    # is then frozen by the `on conflict ... do update` in link_instructor().
+    # Testudo meanwhile prints the same person as "JungEun Kim" one term and
+    # "Jungeun Kim" the next. Comparing the raw strings therefore reported a
+    # correctly queued professor as unexplained, which is the one failure mode
+    # this check exists to distinguish from a genuinely dropped name.
     queue = fetch_all(
         lambda: client.table("instructor_match_queue")
-        .select("observed")
+        .select("observed_norm")
         .is_("resolved_at", "null")
         .order("id")
     )
-    queued = {(r.get("observed") or "").strip() for r in queue}
+    queued = {r.get("observed_norm") for r in queue} - {None}
 
-    awaiting = sorted(n for n in unresolved if n in queued)
-    unexplained = sorted(n for n in unresolved if n not in queued)
+    awaiting = sorted(n for n in unresolved if normalize_name(n) in queued)
+    unexplained = sorted(n for n in unresolved if normalize_name(n) not in queued)
 
     print(
         f"professor links: {len(unresolved)} scheduled instructor(s) have no page "
