@@ -25,7 +25,7 @@ from postgrest.exceptions import APIError  # noqa: E402
 import instructor_registry as registry  # noqa: E402
 from names import normalize_name  # noqa: E402
 
-TERM = 202608
+TERM = 202701
 NAMES = ["Shane Walsh", "Jonathan Lazar", "Ada Lovelace", "Grace Hopper", "Alan Turing"]
 SECTIONS = [
     {"course_code": "CMSC132", "sec_code": f"010{i}", "instructors": [name]}
