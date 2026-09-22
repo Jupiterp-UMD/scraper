@@ -46,6 +46,20 @@ def upload_depts(depts, print_output):
         dept_data = [{"dept_code": d[0], "name": d[1]} for d in depts]
         client.table("departments").insert(dept_data).execute()
 
+def upload_term(term, print_output):
+    '''
+    Record which term `courses` and `sections` now hold. The site reads this
+    back for its term label and Testudo links, so the workflow's `--term` is
+    the only place a new semester has to be set.
+
+    Doesn't upload if `print_output` is enabled.
+    '''
+    if print_output:
+        print(f"Term: {term}")
+    else:
+        client = get_supabase_client()
+        client.table("catalog_term").upsert({"id": True, "term": int(term)}).execute()
+
 # Tables that must never be cleared and reloaded.
 #
 # `upload_data` exists because Testudo data is a snapshot: courses and sections

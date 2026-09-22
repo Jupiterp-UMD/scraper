@@ -2,7 +2,7 @@ import argparse
 from courses import scrape_courses, get_depts
 from sections import scrape_sections
 from instructor_registry import reconcile_instructors
-from db import upload_data, download_course_codes, upload_depts
+from db import upload_data, download_course_codes, upload_depts, upload_term
 from dotenv import load_dotenv
 
 def parse_args():
@@ -48,6 +48,12 @@ def main():
     if args.sections:
         upload_data(sections_data, args.print_output, table='sections')
 
+    # After the catalog uploads, so it never names a term whose data failed to
+    # land.
+    if args.term and (args.courses or args.sections):
+        upload_term(args.term, args.print_output)
+
+    if args.sections:
         # Testudo is now the source of instructor records. Every name in the
         # scrape is resolved to an instructor id, new professors are created,
         # and anything ambiguous goes to `instructor_match_queue` for a human

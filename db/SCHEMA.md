@@ -79,6 +79,22 @@ next sections run fills them in.
 | Read by | `/sections`, `/courses/withSections`, the planner, the schedule generator |
 | Public | yes |
 
+### `catalog_term` — 1 row
+
+Which term the three tables above hold, as a six-digit code (`202608`). One
+row, keyed `id = true` like `rating_config`, upserted by the scraper after every
+catalog upload. The workflow's `--term` is the source; the site's term label
+and Testudo links read it back from here, so a new semester is set in one place.
+
+Empty until the first scrape after its migration, and the site shows no term
+until then.
+
+| | |
+| :-- | :-- |
+| Written by | `scraper/db.py:upload_term` |
+| Read by | `/term`, the planner's term label and Testudo links |
+| Public | yes |
+
 ---
 
 ## Instructor identity
