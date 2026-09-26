@@ -53,8 +53,22 @@ def get_supabase_client() -> "Client":
     return create_client(url, key)
 
 
-def _rows_for_upload(records: list[dict]) -> list[dict]:
-    return [{column: record.get(column) for column in GRADE_COLUMNS} for record in records]
+def _rows_for_upload(records: list[dict], *, write_instructor_ids: bool) -> list[dict]:
+    """
+    Shape parsed records into rows for the upsert.
+
+    `instructor_id` is sent only when the caller resolved it. An upsert writes
+    every column it is given, so sending the key with a None -- which is what a
+    record from the plain `ingest` path carries, since that path never resolves
+    names -- overwrote the ids the backfill and the admin queue had set. Any
+    re-ingest of a term (`--force`, or an amended file with a new hash) unlinked
+    every one of its rows from its professor, silently. Leaving the column out
+    keeps the existing value on conflict and inserts NULL on a new row.
+    """
+    columns = GRADE_COLUMNS if write_instructor_ids else tuple(
+        column for column in GRADE_COLUMNS if column != "instructor_id"
+    )
+    return [{column: record.get(column) for column in columns} for record in records]
 
 
 def chunked(items: list, size: int = CHUNK_SIZE):
@@ -62,12 +76,16 @@ def chunked(items: list, size: int = CHUNK_SIZE):
         yield items[start:start + size]
 
 
-def upsert_grades(client: "Client", records: list[dict]) -> int:
+def upsert_grades(client: "Client", records: list[dict], *, write_instructor_ids: bool) -> int:
     """
     Write grade records, replacing any row with the same
     (term, course_code, sec_code). Returns the number of rows sent.
+
+    `write_instructor_ids` is required rather than defaulted because getting it
+    wrong in either direction is silent: true from a path that never resolved
+    names nulls every link, and false from one that did discards its work.
     """
-    rows = _rows_for_upload(records)
+    rows = _rows_for_upload(records, write_instructor_ids=write_instructor_ids)
     for chunk in chunked(rows):
         client.table("grades").upsert(
             chunk, on_conflict="term,course_code,sec_code"
