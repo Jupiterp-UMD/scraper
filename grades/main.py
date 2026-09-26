@@ -198,7 +198,14 @@ def run_ingest(args: argparse.Namespace) -> int:
         if client:
             if args.replace_term:
                 db.delete_term(client, report.term)
-            db.upsert_grades(client, records)
+                print(
+                    "      note: --replace-term dropped this term's instructor links. Run "
+                    "scripts/backfill_instructor_ids.py to restore them."
+                )
+            # This path does not resolve names, so it must not write
+            # instructor_id: existing links survive the upsert, new rows are
+            # left for the backfill.
+            db.upsert_grades(client, records, write_instructor_ids=False)
             db.record_ingest(client, report, digest)
         else:
             all_records.extend(records)
@@ -291,7 +298,7 @@ def run_ingest_term(args: argparse.Namespace) -> int:
     counts = resolve_instructor_ids(client, records, term)
     print(f"  instructors: {counts['linked']} linked, {counts['queued']} queued for a human")
 
-    db.upsert_grades(client, records)
+    db.upsert_grades(client, records, write_instructor_ids=True)
     db.record_ingest(client, report, digest)
     print(f"  wrote {len(records)} rows")
 
