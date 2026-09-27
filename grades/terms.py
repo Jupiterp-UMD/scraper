@@ -26,9 +26,9 @@ SEASON_MONTHS = {
 }
 
 # Tolerates any junk between the season and the year, which covers the stray
-# hyphen in "Spring -2012" and any double spaces.
+# hyphen in "Spring -2012", any double spaces, and underscores ("Spring_2026").
 _TERM_RE = re.compile(
-    r"(spring|summer|fall|winter)\W*(\d{4})",
+    r"(spring|summer|fall|winter)[\W_]*(\d{4})",
     re.IGNORECASE,
 )
 
