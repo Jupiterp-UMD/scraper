@@ -84,11 +84,35 @@ EXACT_TOTALS_FROM_TERM = 201708
 #             abroad sections in particular often have their own instructor, so
 #             this tier is separated out and excluded from the default
 #             instructor aggregates.
+#   testudo   the export left the row blank and the Schedule of Classes (Testudo)
+#             lists who was scheduled to teach that exact section. Set here from
+#             a `.repaired.csv` `schedule-section` fill, or by `ingest-term`
+#             from a live Testudo scrape.
 #
 # A course in which no section is named at all leaves every row unattributed.
 SOURCE_REPORTED = "reported"
 SOURCE_LEAD = "lead"
 SOURCE_COURSE = "course"
+SOURCE_TESTUDO = "testudo"
+
+# The `.repaired.csv` set is gradefix output, which fills blank instructors from
+# the Schedule of Classes and records how in FILL_SOURCE. Those fills are
+# guesses, not registrar attributions, and loading them as `reported` let a
+# wrong one (MATH401-0501, Spring 2026, filled with an epidemiologist who
+# shares the lecturer's surname) onto a professor page with full confidence.
+# So each fill keeps the tier its evidence deserves.
+FILL_SOURCE_TIERS = {
+    "": SOURCE_REPORTED,
+    "original": SOURCE_REPORTED,
+    "original+schedule-confirmed": SOURCE_REPORTED,
+    "schedule-section": SOURCE_TESTUDO,
+    "schedule-override": SOURCE_TESTUDO,
+    # "Every section of this course has the same instructor" is the same
+    # inference as the `course` carry, and wrong as often.
+    "schedule-course-unanimous": SOURCE_COURSE,
+    "file-course-unanimous": SOURCE_COURSE,
+    "unresolved": None,
+}
 
 # The fifteen grade buckets, in the order they are stored and reported.
 GRADE_FIELDS = (
@@ -147,6 +171,10 @@ HEADER_ALIASES = {
     # Present in Spring 2021 only, and not reproducible from the counts in that
     # file, so it is read and discarded. See README.
     "gpa": "_reported_gpa",
+
+    # gradefix's provenance column in the `.repaired.csv` set; see
+    # FILL_SOURCE_TIERS.
+    "fill_source": "_fill_source",
 }
 
 # A row must map at least this many canonical fields to count as the header.
@@ -179,6 +207,7 @@ class ParseReport:
     instructors_reported: int = 0
     instructors_lead: int = 0
     instructors_course: int = 0
+    instructors_testudo: int = 0
     instructors_missing: int = 0
     warnings: list[str] = field(default_factory=list)
 
@@ -430,6 +459,7 @@ def parse_file(path: str | Path, term: int | None = None) -> tuple[list[dict], P
     carry_course: str | None = None
     carry_name: str | None = None
     carry_sec: str | None = None
+    unknown_fills: set[str] = set()
 
     for row in rows[header_index + 1:]:
         if not row or all(cell == "" for cell in row):
@@ -468,8 +498,26 @@ def parse_file(path: str | Path, term: int | None = None) -> tuple[list[dict], P
         if course != carry_course:
             carry_course, carry_name, carry_sec = course, None, None
 
+        fill_tier = SOURCE_REPORTED
+        if "_fill_source" in mapping:
+            index = mapping["_fill_source"] + delta
+            fill_source = row[index].lower() if index < len(row) else ""
+            if fill_source not in FILL_SOURCE_TIERS and fill_source not in unknown_fills:
+                unknown_fills.add(fill_source)
+                report.warnings.append(
+                    f"unrecognized FILL_SOURCE {fill_source!r}; its rows are loaded "
+                    f"as `course` until it is added to FILL_SOURCE_TIERS"
+                )
+            fill_tier = FILL_SOURCE_TIERS.get(fill_source) or SOURCE_COURSE
+
         reported_name = natural_name(instructor_raw)
-        if reported_name:
+        if reported_name and fill_tier != SOURCE_REPORTED:
+            # A gradefix fill: the registrar printed nothing here, so the raw
+            # column stays null and the row is never a carry source.
+            instructor_raw = None
+            instructor_name = reported_name
+            instructor_source = fill_tier
+        elif reported_name:
             instructor_name = reported_name
             instructor_source = SOURCE_REPORTED
             carry_name, carry_sec = reported_name, sec_code
@@ -497,6 +545,8 @@ def parse_file(path: str | Path, term: int | None = None) -> tuple[list[dict], P
             report.instructors_lead += 1
         elif instructor_source == SOURCE_COURSE:
             report.instructors_course += 1
+        elif instructor_source == SOURCE_TESTUDO:
+            report.instructors_testudo += 1
         else:
             report.instructors_missing += 1
 
@@ -552,7 +602,10 @@ def parse_file(path: str | Path, term: int | None = None) -> tuple[list[dict], P
     # would need a defensible number, and the only figure that is definitely
     # wrong is none.
     attributed = (
-        report.instructors_reported + report.instructors_lead + report.instructors_course
+        report.instructors_reported
+        + report.instructors_lead
+        + report.instructors_course
+        + report.instructors_testudo
     )
     if attributed == 0:
         raise ParseError(

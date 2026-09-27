@@ -73,12 +73,26 @@ def test_upgrades_a_carried_attribution():
     assert records[0]["instructor_source"] == SOURCE_TESTUDO
 
 
-def test_does_not_downgrade_an_existing_testudo_attribution():
-    records = [row(instructor_name="Already Testudo", instructor_source=SOURCE_TESTUDO)]
-    counts = apply_testudo_attribution(records, {("CMSC132", "0101"): ["Someone Else"]})
+def test_live_scrape_replaces_a_file_derived_testudo_attribution():
+    """
+    Before the scrape, a `testudo` row can only have come from a `.repaired.csv`
+    schedule fill, which aligns a printed catalog by position and matches names
+    fuzzily. It filled MATH401-0501 (Spring 2026) with the wrong Nguyen; the
+    scrape, keyed on the exact section, had the right one.
+    """
+    records = [
+        row(
+            course_code="MATH401",
+            sec_code="0501",
+            instructor_name="Thu Thi Xuan Nguyen",
+            instructor_source=SOURCE_TESTUDO,
+        )
+    ]
+    counts = apply_testudo_attribution(records, {("MATH401", "0501"): ["Dong Quan Nguyen"]})
 
-    assert records[0]["instructor_name"] == "Already Testudo"
-    assert counts["upgraded"] == 0
+    assert records[0]["instructor_name"] == "Dong Quan Nguyen"
+    assert records[0]["instructor_source"] == SOURCE_TESTUDO
+    assert counts["upgraded"] == 1
 
 
 def test_placeholder_instructors_are_not_used():

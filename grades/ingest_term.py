@@ -48,13 +48,11 @@ _SCRAPER_ROOT = Path(__file__).resolve().parent.parent
 if str(_SCRAPER_ROOT) not in sys.path:
     sys.path.append(str(_SCRAPER_ROOT))
 
-from parse import SOURCE_LEAD, SOURCE_REPORTED  # noqa: E402
-
-SOURCE_TESTUDO = "testudo"
+from parse import SOURCE_COURSE, SOURCE_LEAD, SOURCE_REPORTED, SOURCE_TESTUDO  # noqa: E402
 
 # reported > testudo > lead > course. A row is only ever upgraded, never
 # downgraded: a name the registrar printed is not replaced by Testudo's guess.
-_PRECEDENCE = {SOURCE_REPORTED: 3, SOURCE_TESTUDO: 2, SOURCE_LEAD: 1, "course": 0}
+_PRECEDENCE = {SOURCE_REPORTED: 3, SOURCE_TESTUDO: 2, SOURCE_LEAD: 1, SOURCE_COURSE: 0}
 
 
 def testudo_instructor_map(term: int, course_codes: list[str]) -> dict[tuple[str, str], list[str]]:
@@ -97,8 +95,12 @@ def apply_testudo_attribution(
         if record.get("instructor"):
             continue
 
+        # Strictly greater: a `testudo` row at this point came from a
+        # `.repaired.csv` schedule fill, which aligns a printed catalog by
+        # position and matches names fuzzily. The live scrape is keyed on the
+        # exact section, so it wins a tie.
         current = record.get("instructor_source")
-        if _PRECEDENCE.get(current, -1) >= _PRECEDENCE[SOURCE_TESTUDO]:
+        if _PRECEDENCE.get(current, -1) > _PRECEDENCE[SOURCE_TESTUDO]:
             continue
 
         names = instructor_map.get((record["course_code"], record["sec_code"]))

@@ -96,6 +96,65 @@ def test_an_unmapped_instructor_column_is_refused() -> None:
     )
 
 
+def test_gradefix_fills_keep_a_weaker_tier_than_reported() -> None:
+    """
+    A `.repaired.csv` name that gradefix filled in is a guess, not something the
+    registrar printed. Loaded as `reported`, a wrong guess (MATH401-0501, Spring
+    2026) sat on a professor page with full confidence and Testudo could not
+    correct it.
+    """
+    header = f"TERM,COURSE,SECTION,INSTRUCTOR,TOTAL,{GRADE_COLUMNS},FILL_SOURCE,FILL_CONFIDENCE,NOTES"
+    row = lambda sec, name, fill: (  # noqa: E731
+        f"Spring 2026,MATH401,{sec},\"{name}\",{ROW_TOTAL},{GRADE_VALUES},{fill},high,\n"
+    )
+    path = write(
+        header + "\n"
+        + row("0111", "Liu, Yaxiong", "original+schedule-confirmed")
+        + row("0112", "Liu, Yaxiong", "original")
+        + row("0501", "Nguyen, Thu Thi Xuan", "schedule-section")
+        + row("0601", "Yang, Haizhao", "schedule-course-unanimous")
+        + row("0701", "Kass, Jason M", "file-course-unanimous")
+        + row("0801", "", "unresolved")
+    )
+    try:
+        records, report = parse_file(path, term=202601)
+    finally:
+        path.unlink()
+
+    by_sec = {r["sec_code"]: r for r in records}
+    tiers = {sec: r["instructor_source"] for sec, r in by_sec.items()}
+    assert tiers == {
+        "0111": "reported",
+        "0112": "reported",
+        "0501": "testudo",
+        "0601": "course",
+        "0701": "course",
+        # Carried from the last *printed* name, never from a fill.
+        "0801": "course",
+    }, tiers
+    assert by_sec["0801"]["instructor_name"] == "Yaxiong Liu", by_sec["0801"]
+    # The raw column is what the registrar printed, and it printed nothing.
+    assert by_sec["0501"]["instructor"] is None, by_sec["0501"]
+    assert by_sec["0501"]["instructor_name"] == "Thu Thi Xuan Nguyen"
+    assert by_sec["0111"]["instructor"] == "Liu, Yaxiong"
+    assert report.instructors_testudo == 1, report.instructors_testudo
+    assert not report.warnings, report.warnings
+
+
+def test_an_unknown_fill_source_loads_as_course_and_says_so() -> None:
+    path = write(
+        f"TERM,COURSE,SECTION,INSTRUCTOR,TOTAL,{GRADE_COLUMNS},FILL_SOURCE\n"
+        f"202601,CMSC132,0101,\"Walsh, Shane\",{ROW_TOTAL},{GRADE_VALUES},llm-guess\n"
+    )
+    try:
+        records, report = parse_file(path, term=202601)
+    finally:
+        path.unlink()
+
+    assert records[0]["instructor_source"] == "course", records[0]
+    assert any("llm-guess" in w for w in report.warnings), report.warnings
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

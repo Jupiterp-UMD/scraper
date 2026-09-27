@@ -152,7 +152,12 @@ def _first_ok(fa: List[str], fb: List[str]) -> bool:
             if len(x) == 1 or len(y) == 1:
                 if x[0] == y[0]:
                     return True
-            elif x == y or x.startswith(y) or y.startswith(x) or _edit1(x, y):
+            elif x == y or x.startswith(y) or y.startswith(x):
+                return True
+            # Typo tolerance only where a typo is likelier than a different
+            # person: short given names one letter apart are routinely distinct
+            # ("Quan" / "Xuan" put an epidemiologist on MATH401-0501, S26).
+            elif min(len(x), len(y)) >= 5 and x[0] == y[0] and _edit1(x, y):
                 return True
     return False
 
