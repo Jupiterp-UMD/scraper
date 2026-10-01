@@ -57,8 +57,13 @@ def expected_grade(raw: str | None) -> str | None:
     PlanetTerp's field is free text in practice: 13% blank, plus lowercase
     letters, `P`, `XF`, `?`, `B?`. Anything that is not a grade on the
     `reviews` scale is dropped rather than guessed at.
+
+    Compared uppercased, but `Other` is stored in the spelling the column's
+    check constraint allows.
     """
     grade = (raw or "").strip().upper()
+    if grade == "OTHER":
+        return "Other"
     return grade if grade in GRADES else None
 
 
