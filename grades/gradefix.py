@@ -479,8 +479,26 @@ def _clean_instructor(s: str) -> str:
     return s
 
 
-def parse_schedule_new(lines: List[str]) -> Tuple[List[Block], List[Tuple[int, str]]]:
-    """2013+ layout: bare course codes in the margin, 'Grading Method:' starts a block."""
+# Lines that describe a whole course rather than one section. In a catalog with no
+# 'Grading Method' markers, seeing one of these between two sections means the
+# second section belongs to a new course.
+COURSE_META_RE = re.compile(
+    r"^(Prerequisite|Corequisite|Restriction|Cross-listed|Credit only|Formerly|"
+    r"Also offered|Recommended|Jointly|Repeatable)", re.I)
+
+
+def parse_schedule_new(lines: List[str], prose_blocks: bool = False
+                       ) -> Tuple[List[Block], List[Tuple[int, str]]]:
+    """2013+ layout: bare course codes in the margin, 'Grading Method:' starts a block.
+
+    Some exports (Fall 2024) print no 'Grading Method' line at all, so nothing marks
+    where one course ends. With `prose_blocks`, a section starts a new block when,
+    since the previous section, the numbering restarted (cross-listed pairs such as
+    DATA400/STAT400 repeat 0111-0333 back to back), a 'CODE Title |' line appeared,
+    or a course-level line did (Prerequisite, Cross-listed, ...). Per-section notes
+    ("Golden ID students are not eligible ...") are none of these, so they do not
+    split a course.
+    """
     blocks: List[Block] = []
     codes: List[Tuple[int, str]] = []
     cur: Optional[Block] = None
@@ -489,6 +507,31 @@ def parse_schedule_new(lines: List[str]) -> Tuple[List[Block], List[Tuple[int, s
     pending_anchor_idx = -1
     pending_line = -10 ** 6
     last_gm = -10
+    last_sec = ""
+    boundary = True                               # prose_blocks: next section opens a block
+
+    def open_block(i: int) -> Block:
+        nonlocal pending_title, pending_anchor, pending_anchor_idx
+        near = pending_anchor is not None and (i - pending_line) <= 40
+        blk = Block(line=i, title=pending_title,
+                    anchor=pending_anchor if near else None,
+                    anchor_idx=pending_anchor_idx if near else -1)
+        blocks.append(blk)
+        pending_title, pending_anchor, pending_anchor_idx = "", None, -1
+        return blk
+
+    def add_section(i: int, sec: str, names: Optional[List[str]]) -> None:
+        nonlocal cur, last_sec, boundary
+        if prose_blocks and (cur is None or boundary or sec <= last_sec):
+            cur = open_block(i)
+        boundary = False
+        last_sec = sec
+        if cur is None:
+            return
+        if names is None:
+            cur.sections.setdefault(sec, [])
+        else:
+            cur.sections[sec] = names
 
     for i, raw in enumerate(lines):
         s = raw.strip()
@@ -505,7 +548,10 @@ def parse_schedule_new(lines: List[str]) -> Tuple[List[Block], List[Tuple[int, s
             pending_anchor = m.group(1)
             pending_title = m.group(2).strip()
             pending_line = i
+            boundary = True
             continue
+        if prose_blocks and COURSE_META_RE.match(s):
+            boundary = True
         if "Grading Method" in s:
             # The marker is not always at line start: later catalogs fold the credit count
             # in front of it ("Credits: 4 Grading Method: Regular") or prefix a permission
@@ -531,15 +577,12 @@ def parse_schedule_new(lines: List[str]) -> Tuple[List[Block], List[Tuple[int, s
             if "Seats" in nxt:
                 m = re.match(r"^(\d{4}[A-Z]?)\*?", s)
                 name = _clean_instructor(nxt.split("Seats")[0])
-                if m and cur is not None:
-                    cur.sections.setdefault(m.group(1), [])
-                    if name:
-                        cur.sections[m.group(1)] = split_instructors(name)
+                if m:
+                    add_section(i, m.group(1), split_instructors(name) if name else None)
                 continue
         if m:
             sec, name = m.group(1), _clean_instructor(m.group(2))
-            if cur is not None:
-                cur.sections[sec] = split_instructors(name)
+            add_section(i, sec, split_instructors(name))
             continue
 
         if (len(s) > 3 and not TIME_RE.search(s) and not s[0].isdigit()
@@ -548,8 +591,11 @@ def parse_schedule_new(lines: List[str]) -> Tuple[List[Block], List[Tuple[int, s
                                       "Also offered", "Jointly", "This ", "http"))):
             if len(s) < 120:
                 pending_title = s
-                pending_anchor, pending_anchor_idx = None, -1
-                pending_line = i
+                # Without 'Grading Method' the description sits between the
+                # 'CODE Title |' anchor and the sections, so it must not clear it.
+                if not prose_blocks:
+                    pending_anchor, pending_anchor_idx = None, -1
+                    pending_line = i
     return blocks, codes
 
 
@@ -766,7 +812,8 @@ def build_schedule(path: str, evidence_file: Optional[GradeFile] = None,
         blocks, codes = parse_schedule_old(lines)
         aligned, unaligned = len(blocks), 0
     else:
-        blocks, codes = parse_schedule_new(lines)
+        blocks, codes = parse_schedule_new(
+            lines, prose_blocks=not any("Grading Method" in l for l in lines))
         evidence = None
         if evidence_file is not None:
             evidence = collections.defaultdict(dict)

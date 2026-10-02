@@ -121,6 +121,29 @@ def apply_testudo_attribution(
     return counts
 
 
+MAX_ATTEMPTS = 3
+
+
+def _with_retries(call):
+    """
+    Run one request, retrying a dropped connection.
+
+    A term resolves ~2,800 names one request each, and Supabase's edge resets a
+    long-lived HTTP/2 connection partway through often enough that a Spring 2025
+    run died on it after a ten-minute Testudo scrape. `link_instructor` is
+    idempotent, so a retry cannot double-link anything.
+    """
+    import httpx
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return call()
+        except httpx.TransportError:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            time.sleep(attempt)
+
+
 def resolve_instructor_ids(client, records: list[dict], term: int) -> dict[str, int]:
     """
     Resolve every distinct instructor name in this term's rows to an id.
@@ -151,7 +174,7 @@ def resolve_instructor_ids(client, records: list[dict], term: int) -> dict[str, 
                 if record.get("instructor_source") == SOURCE_TESTUDO
                 else SOURCE_REGISTRAR
             )
-            instructor_id = client.rpc(
+            instructor_id = _with_retries(lambda: client.rpc(
                 "link_instructor",
                 {
                     "observed": raw.strip(),
@@ -164,7 +187,7 @@ def resolve_instructor_ids(client, records: list[dict], term: int) -> dict[str, 
                     "create_if_missing": True,
                     "seen_term": term,
                 },
-            ).execute().data
+            ).execute().data)
             seen[normalized] = instructor_id
             counts["linked" if instructor_id is not None else "queued"] += 1
 
