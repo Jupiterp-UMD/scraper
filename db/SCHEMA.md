@@ -106,6 +106,11 @@ PlanetTerp provenance (`pt_slug`, `pt_average_rating`, `pt_review_count`,
 > filters on it. Its only writer is `set_active_instructors()`. Do not set it
 > by hand.
 
+> `pt_slug` is PlanetTerp's slug, not Jupiterp's: the two diverged when slugs
+> were regenerated from names (`joseph-conroy` here is `conroy_joseph` there).
+> It keys the rating snapshot and `planetterp_reviews`, and professor pages
+> link to PlanetTerp with it. Null when no PlanetTerp record is linked.
+
 > `display_rating` is the number to **show**: the recency-weighted average of
 > Jupiterp reviews and the PlanetTerp baseline, with no shrinkage.
 > `combined_rating` is the number to **rank by**: the same blend pulled toward

@@ -41,6 +41,14 @@ comment on column instructors.combined_rating is
     'The rating to rank by: display_rating shrunk toward the site-wide prior by '
     'rating_config.shrinkage_reviews. Not the number to show a reader.';
 
+-- The old comment said `pt_slug` was kept only for the one-time rating join.
+-- It is also what `planetterp_reviews` joins through, and professor pages now
+-- link to PlanetTerp with it.
+comment on column instructors.pt_slug is
+    'PlanetTerp''s slug: the key for the rating snapshot, planetterp_reviews, '
+    'and links to the professor''s PlanetTerp page. Null when no PlanetTerp '
+    'record is linked. Not used for routing.';
+
 -- `select i.*` was expanded when the view was created, so the new column is
 -- not in it until the view is redefined. It is appended last, which is the one
 -- change `create or replace view` allows, and keeps the view's grants.
