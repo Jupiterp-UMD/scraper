@@ -2,7 +2,7 @@ import argparse
 from courses import scrape_courses, get_depts
 from sections import scrape_sections
 from instructor_registry import reconcile_instructors
-from db import upload_data, download_course_codes, upload_depts
+from db import replace_catalog, download_course_codes
 from dotenv import load_dotenv
 
 def parse_args():
@@ -40,14 +40,17 @@ def main():
     if args.sections:
         sections_data = scrape_sections(args.term, course_codes)
 
-    # Upload courses and sections to DB
-    if args.courses:
-        if not args.department:
-            upload_depts(depts, args.print_output)
-        upload_data(course_data, args.print_output, table='courses')
+    # Upload departments, courses and sections to DB in one transaction, so the
+    # site never reads a half-written catalog. A single-department run does
+    # not replace the department list.
+    if args.courses or args.sections:
+        replace_catalog(
+            depts=depts if args.courses and not args.department else None,
+            courses=course_data if args.courses else None,
+            sections=sections_data if args.sections else None,
+            print_output=args.print_output,
+        )
     if args.sections:
-        upload_data(sections_data, args.print_output, table='sections')
-
         # Testudo is now the source of instructor records. Every name in the
         # scrape is resolved to an instructor id, new professors are created,
         # and anything ambiguous goes to `instructor_match_queue` for a human
