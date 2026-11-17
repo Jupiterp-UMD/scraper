@@ -37,14 +37,34 @@ def upload_depts(depts, print_output):
     if print_output:
         print_as_table([{"dept_code": d[0], "dept_name": d[1]} for d in depts])
     else:
+        # An empty scrape is a failed scrape, not a university with no
+        # departments. Leave the table as it is rather than pruning every row.
+        if not depts:
+            print("No departments scraped; leaving the departments table untouched.")
+            return
+
         client = get_supabase_client()
+        replace_depts(client, depts)
 
-        # Delete all current data to avoid having stale data
-        client.table("departments").delete().neq("dept_code", "").execute()
+def replace_depts(client, depts):
+    '''
+    Make `departments` match `depts` without the table ever being empty.
 
-        # Upload data
-        dept_data = [{"dept_code": d[0], "name": d[1]} for d in depts]
-        client.table("departments").insert(dept_data).execute()
+    This used to delete every row and then insert the new list. For the moment
+    between the two the table really was empty, and the API caches whatever it
+    reads for two hours: one request landing in that gap served an empty
+    department list to every visitor, which silently disables course search.
+
+    Upserting first means a reader sees the old list or the new one, never
+    nothing. Departments that have disappeared from Testudo are removed
+    afterwards, so stale rows still do not accumulate.
+    '''
+    dept_data = [{"dept_code": d[0], "name": d[1]} for d in depts]
+    client.table("departments").upsert(dept_data, on_conflict="dept_code").execute()
+
+    # Prune only what the scrape no longer lists.
+    codes = [row["dept_code"] for row in dept_data]
+    client.table("departments").delete().not_.in_("dept_code", codes).execute()
 
 # Tables that must never be cleared and reloaded.
 #
