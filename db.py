@@ -30,70 +30,45 @@ def print_as_table(data, wrap_width=36):
     rows = [item.values() for item in wrapped_data]
     print(tabulate(rows, headers=headers, tablefmt="grid"))
 
-def upload_depts(depts, print_output):
+def replace_catalog(depts, courses, sections, print_output):
     '''
-    Doesn't upload if `print_output` is enabled
-    '''
-    if print_output:
-        print_as_table([{"dept_code": d[0], "dept_name": d[1]} for d in depts])
-    else:
-        client = get_supabase_client()
+    Replace the scraped catalog in one transaction through the
+    `replace_catalog()` database function.
 
-        # Delete all current data to avoid having stale data
-        client.table("departments").delete().neq("dept_code", "").execute()
-
-        # Upload data
-        dept_data = [{"dept_code": d[0], "name": d[1]} for d in depts]
-        client.table("departments").insert(dept_data).execute()
-
-# Tables that must never be cleared and reloaded.
-#
-# `upload_data` exists because Testudo data is a snapshot: courses and sections
-# go stale, so each run replaces them wholesale. Instructor identity is the
-# opposite. `instructor_aliases` rows are append-only and deleting one orphans
-# every grade row matched through it, and `reviews` will hold user-submitted
-# content with `on delete cascade` back to `instructors` - so a nightly
-# delete-all here would silently destroy every review in the database.
-#
-# This is a guard rather than a comment because the `instructors` branch of
-# this function was removed rather than never existing, and the obvious way to
-# add a new table to the nightly scrape is to copy the line above.
-NEVER_TRUNCATE = frozenset({
-    'instructors',
-    'instructor_aliases',
-    'instructor_match_queue',
-    'section_instructors',
-    'grades',
-    'grade_ingests',
-    'reviews',
-})
-
-def upload_data(data, print_output, table):
-    '''
-    Replace the contents of a snapshot table.
-
+    Pass None for any table this run does not replace; it is left as it is.
     Doesn't upload if `print_output` is enabled.
+
+    The tables used to be replaced with a delete and then an insert per table,
+    as separate requests. A reader between the two saw an empty table, and the
+    API cached it: on 2026-11-17 that emptied the department list and broke
+    course search on the site for an hour. One call is one transaction, so
+    readers see the old catalog until it commits. See
+    supabase/migrations/20261117120000_replace_catalog.sql.
+
+    Instructors, aliases, grades and reviews are not snapshot data and must
+    never be replaced this way; they have their own writers
+    (instructor_registry.py, grades/db.py).
     '''
-    if table in NEVER_TRUNCATE:
-        raise ValueError(
-            f"'{table}' is append/upsert-only and must not be truncated; "
-            f"use the dedicated writer for it (see instructor_registry.py "
-            f"for instructors, grades/db.py for grades)"
-        )
+    dept_rows = None if depts is None else [{"dept_code": d[0], "name": d[1]} for d in depts]
 
     if print_output:
-        print_as_table(data)
-    else:
-        client = get_supabase_client()
+        for rows in (dept_rows, courses, sections):
+            if rows is not None:
+                print_as_table(rows)
+        return
 
-        # Delete all current data to avoid having stale data. `gte('', '')` is
-        # true for every non-null text value, which is the PostgREST way of
-        # saying "all rows"; the previous `neq(col, 0)` compared a text column
-        # to an integer and worked only by accident of coercion.
-        client.table(table).delete().gte('course_code', '').execute()
+    # Refused by the database too; checked here so the error names the cause
+    # before a multi-megabyte request is sent.
+    for name, rows in (("departments", dept_rows), ("courses", courses), ("sections", sections)):
+        if rows is not None and len(rows) == 0:
+            raise ValueError(f"refusing to replace {name} with an empty scrape")
 
-        # Upload data
-        client.table(table).insert(data).execute()
+    client = get_supabase_client()
+    client.rpc("replace_catalog", {
+        "p_departments": dept_rows,
+        "p_courses": courses,
+        "p_sections": sections,
+    }).execute()
 
 def download_course_codes(dept_opt: str | None):
     # Continues to send requests until the API returns less than 500.
